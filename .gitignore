@@ -1,0 +1,20 @@
+# .env
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Database
+survey.db
+
+# Audio files
+audio/
+*.ogg
+*.wav
+
+# Whisper models (download separately)
+models/ggml-small.bin
+
+# macOS
+.DS_Store

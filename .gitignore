@@ -18,3 +18,4 @@ models/ggml-small.bin
 
 # macOS
 .DS_Store
+deploy/inventory.ini

@@ -59,6 +59,53 @@ systemctl restart survey-bot
 systemctl stop survey-bot
 ```
 
+## Watchdog (мониторинг)
+
+Каждые 5 минут проверяет, что бот жив, диск не забит, RAM в норме, Telegram API доступен. Если проблема — пишет в journald.
+
+**Установка вручную (без Ansible):**
+```bash
+# Скопировать файлы уже на сервере
+# watchdog.sh должен лежать в /opt/survey-bot/deploy/watchdog.sh
+
+# Создать сервис
+cat > /etc/systemd/system/survey-bot-watchdog.service <<'SERVICEEOF'
+[Unit]
+Description=Survey Bot Watchdog Check
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/survey-bot/deploy/watchdog.sh
+Environment=ADMIN_IDS=294356300,271032976
+SERVICEEOF
+
+# Создать таймер (каждые 5 минут)
+cat > /etc/systemd/system/survey-bot-watchdog.timer <<'TIMEREOF'
+[Unit]
+Description=Run Survey Bot watchdog every 5 minutes
+Requires=survey-bot-watchdog.service
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+systemctl daemon-reload
+systemctl enable --now survey-bot-watchdog.timer
+```
+
+**Проверка:**
+```bash
+systemctl list-timers --no-pager | grep watchdog
+journalctl -u survey-bot-watchdog -n 10
+```
+
+Также watchdog автоматически настраивается через Ansible (см. `deploy/playbook.yml`).
+
 ## Локальный запуск (для разработки)
 
 ## Команды бота

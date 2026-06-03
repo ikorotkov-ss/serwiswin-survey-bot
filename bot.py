@@ -98,8 +98,17 @@ async def questions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming voice messages — download, transcribe, save."""
-    voice = update.message.voice
     user = update.effective_user
+
+    # Require role selection first
+    if not context.user_data.get("role"):
+        await update.message.reply_text(
+            "Сначала выберите роль, чтобы я знал, какие вопросы вам задавать.\n"
+            "Напишите /start для выбора роли."
+        )
+        return
+
+    voice = update.message.voice
 
     try:
         # Download the voice file
@@ -184,12 +193,12 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     h = health_check()
     msg = (
-        f"🩺 **Health Check**\n\n"
-        f"**Status:** {'✅ Ok' if h['status'] == 'ok' else '❌ Issues'}\n"
-        f"**Data dir:** `{h['data_dir']}`\n"
-        f"**DB:** {'✅ exists' if h['database']['exists'] else '❌ missing'} ({h['database']['size_mb']} MB)\n\n"
-        f"**Диск:** {h['disk']['used_gb']} / {h['disk']['total_gb']} GB ({h['disk']['percent_used']}%)\n"
-        f"**Свободно:** {h['disk']['free_gb']} GB\n"
+        f"Бот работает.\n\n"
+        f"Статус: {'OK' if h['status'] == 'ok' else 'Проблемы'}\n"
+        f"Данные: {h['data_dir']}\n"
+        f"БД: {'есть' if h['database']['exists'] else 'нет'} ({h['database']['size_mb']} MB)\n\n"
+        f"Диск: {h['disk']['used_gb']} / {h['disk']['total_gb']} GB ({h['disk']['percent_used']}%)\n"
+        f"Свободно: {h['disk']['free_gb']} GB\n"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -199,8 +208,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user = update.effective_user
 
+    # Log user ID for admin identification
+    if text == "/myid":
+        await update.message.reply_text(f"Твой Telegram ID: `{user.id}`", parse_mode="Markdown")
+        return
+
     # Skip commands
     if text.startswith("/"):
+        return
+
+    # Require role selection first
+    if not context.user_data.get("role"):
+        await update.message.reply_text(
+            "Сначала выберите роль, чтобы я знал, какие вопросы вам задавать.\n"
+            "Напишите /start для выбора роли."
+        )
         return
 
     # Check if user is clarifying a question number after a voice message

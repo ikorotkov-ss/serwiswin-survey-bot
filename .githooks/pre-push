@@ -1,0 +1,42 @@
+#!/bin/bash
+# Pre-push hook: detect secrets (tokens, passwords, IDs) before push
+# Install: git config core.hooksPath .githooks
+
+echo "=== Pre-push: checking for secrets... ==="
+
+# Patterns to detect (no false positives on placeholders)
+PATTERNS=(
+    'bot[0-9]+:[A-Za-z0-9_-]{35,45}'          # Telegram Bot Token
+    '[0-9]{8,10}:[A-Za-z0-9_-]{35,45}'         # Telegram Token (alt)
+    'ghp_[A-Za-z0-9]{36}'                       # GitHub PAT
+    'gho_[A-Za-z0-9]{36}'                       # GitHub OAuth
+    'ghu_[A-Za-z0-9]{36}'                       # GitHub user token
+    'ghr_[A-Za-z0-9]{76}'                       # GitHub refresh token
+    'ghs_[A-Za-z0-9]{36}'                       # GitHub SSH token
+)
+
+# Files that are allowed to contain secrets (never pushed)
+IGNORED_FILES=".env|inventory.ini|watchdog.sh|*.db|*.ogg|*.wav|__pycache__/"
+
+# Get staged/new files that would be pushed
+FILES=$(git diff --cached --name-only --diff-filter=ACMRT | grep -vE "$IGNORED_FILES")
+
+if [ -z "$FILES" ]; then
+    echo "   No files to check."
+    exit 0
+fi
+
+for pattern in "${PATTERNS[@]}"; do
+    MATCHES=$(git diff --cached -U0 | grep -E "^\+" | grep -oE "$pattern" || true)
+    if [ -n "$MATCHES" ]; then
+        echo "   FAIL: Potential secret found matching pattern: $pattern"
+        echo "$MATCHES" | sed 's/^/       /'
+        echo ""
+        echo "   Remove the secret from tracked files before pushing."
+        echo "   If this is a false positive, update .githooks/pre-push."
+        exit 1
+    fi
+done
+
+echo "   All checks passed. Push allowed."
+exit 0

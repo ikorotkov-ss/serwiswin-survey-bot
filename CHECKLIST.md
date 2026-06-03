@@ -8,6 +8,7 @@
 - [ ] `.env.example` — без реальных токенов, только шаблон
 - [ ] `.gitignore` закрывает: `.env`, `survey.db`, `inventory.ini`, `audio/`, `models/`, `__pycache__/`
 - [ ] Нет захардкоженных IP, паролей, токенов в коде
+- [ ] **Pre-push hook установлен:** `git config core.hooksPath .githooks` (проверяет секреты перед пушем)
 
 ### 2. Проверка сервера
 - [ ] `systemctl status survey-bot` — `active (running)` и `enabled`

@@ -37,6 +37,13 @@
 - [ ] `df -h /` — диск не забит (модель 466MB + БД)
 - [ ] `ps aux | grep survey-bot` — процесс не жрёт CPU
 
+### 7. Мониторинг и алерты
+- [ ] Бот прислал startup-уведомление (если перезапускался)
+- [ ] `systemctl status survey-bot-watchdog.timer` — активен
+- [ ] `journalctl -u survey-bot-watchdog -n 10` — нет ошибок ("All checks passed")
+- [ ] `/health` в Telegram → отвечает статусом сервера
+- [ ] `ls {{ data_dir }}/logs/` — logs пишутся
+
 ---
 
 ## Типичные ошибки (из опыта)

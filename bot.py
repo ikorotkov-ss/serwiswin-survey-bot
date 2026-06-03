@@ -1,6 +1,7 @@
 import os
 import csv
 import io
+import traceback
 from pathlib import Path
 from datetime import datetime
 
@@ -18,6 +19,7 @@ from config import BOT_TOKEN, AUDIO_DIR, ADMIN_IDS
 from database import init_db, load_questions, save_response, get_stats, get_all_responses, get_question
 from survey_data import questions, format_questions
 from transcriber import transcribe, parse_question_number
+from monitor import log_info, log_error, startup_alert, health_check, send_pending_alerts, send_immediate_alert
 
 
 # Ensure audio directory exists
@@ -26,6 +28,7 @@ AUDIO_DIR.mkdir(exist_ok=True)
 # On startup: init DB and load questions
 init_db()
 load_questions(questions)
+log_info("Database initialized, questions loaded")
 
 # ─── Roles ────────────────────────────────────────────────────────────
 
@@ -98,11 +101,16 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     voice = update.message.voice
     user = update.effective_user
 
-    # Download the voice file
-    file = await voice.get_file()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    ogg_path = AUDIO_DIR / f"{user.id}_{timestamp}.ogg"
-    await file.download_to_drive(ogg_path)
+    try:
+        # Download the voice file
+        file = await voice.get_file()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ogg_path = AUDIO_DIR / f"{user.id}_{timestamp}.ogg"
+        await file.download_to_drive(ogg_path)
+    except Exception as e:
+        log_error("voice_download", e, {"user_id": user.id})
+        await update.message.reply_text("❌ Не удалось загрузить голосовое. Попробуйте ещё раз.")
+        return
 
     await update.message.reply_text("🎧 Получил голосовое, расшифровываю...")
 
@@ -141,6 +149,49 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         # Save user context so we can match next text message to this transcribed audio
         context.user_data["pending_question"] = {"audio_path": str(ogg_path), "transcript": text}
+
+
+async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYPE):
+    """Global error handler — catches all unhandled exceptions."""
+    log_error("unhandled_exception", context.error, {
+        "update_id": update.update_id if update else None,
+        "user_id": update.effective_user.id if update and update.effective_user else None,
+    })
+    # Attempt to notify the user
+    if update and update.effective_chat:
+        try:
+            await update.effective_chat.send_message(
+                "❌ Произошла внутренняя ошибка. Администратор уже уведомлён."
+            )
+        except Exception:
+            pass
+    # Notify admins
+    try:
+        await send_immediate_alert(
+            context.application,
+            "Unhandled Exception",
+            f"```\n{''.join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))[:3000]}```",
+        )
+    except Exception:
+        pass
+
+
+async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command: show system health."""
+    if not _is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда только для администраторов.")
+        return
+
+    h = health_check()
+    msg = (
+        f"🩺 **Health Check**\n\n"
+        f"**Status:** {'✅ Ok' if h['status'] == 'ok' else '❌ Issues'}\n"
+        f"**Data dir:** `{h['data_dir']}`\n"
+        f"**DB:** {'✅ exists' if h['database']['exists'] else '❌ missing'} ({h['database']['size_mb']} MB)\n\n"
+        f"**Диск:** {h['disk']['used_gb']} / {h['disk']['total_gb']} GB ({h['disk']['percent_used']}%)\n"
+        f"**Свободно:** {h['disk']['free_gb']} GB\n"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -265,11 +316,13 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("export", export_command))
     app.add_handler(CommandHandler("about", about_command))
+    app.add_handler(CommandHandler("health", health_command))
     app.add_handler(CallbackQueryHandler(role_callback, pattern="^role_"))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(error_handler)
 
-    print("Бот запущен...")
+    log_info("Bot starting...")
     app.run_polling()
 
 

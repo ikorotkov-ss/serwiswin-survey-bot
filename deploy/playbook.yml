@@ -134,3 +134,38 @@
         owner: "{{ bot_user }}"
         group: "{{ bot_user }}"
         mode: 0755
+
+    # ── Watchdog (systemd timer every 5 min) ──────────────────────────
+
+    - name: Create logs directory
+      file:
+        path: "{{ data_dir }}/logs"
+        state: directory
+        owner: "{{ bot_user }}"
+        group: "{{ bot_user }}"
+        mode: 0755
+
+    - name: Install watchdog script
+      template:
+        src: watchdog.sh
+        dest: "{{ bot_dir }}/deploy/watchdog.sh"
+        mode: 0755
+
+    - name: Install watchdog service
+      template:
+        src: survey-bot-watchdog.service.j2
+        dest: /etc/systemd/system/survey-bot-watchdog.service
+        mode: 0644
+
+    - name: Install watchdog timer
+      template:
+        src: survey-bot-watchdog.timer.j2
+        dest: /etc/systemd/system/survey-bot-watchdog.timer
+        mode: 0644
+
+    - name: Enable and start watchdog timer
+      systemd:
+        name: survey-bot-watchdog.timer
+        enabled: yes
+        state: started
+        daemon_reload: yes

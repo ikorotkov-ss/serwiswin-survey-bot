@@ -1,0 +1,11 @@
+[Unit]
+Description=SerwisWin Survey Bot Watchdog Timer (every 5 min)
+RefuseManualStart=no
+
+[Timer]
+OnCalendar=minutely
+# Run every 5 minutes (at :05, :10, :15, etc.)
+Unit=survey-bot-watchdog.service
+
+[Install]
+WantedBy=timers.target

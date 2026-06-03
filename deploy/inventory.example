@@ -1,0 +1,8 @@
+[bot]
+# После создания сервера — подставьте IP вместо 0.0.0.0
+# И передайте токен и админов через --extra-vars
+0.0.0.0 ansible_user=root
+
+# Пример готовой команды:
+# ansible-playbook -i inventory.ini playbook.yml \
+#   --extra-vars "bot_token=8571426172:AAF9b... admin_ids=АДМИН_ID"

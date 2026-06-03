@@ -5,6 +5,7 @@
   vars:
     repo_url: "https://github.com/ikorotkov-ss/serwiswin-survey-bot.git"
     bot_dir: /opt/survey-bot
+    data_dir: /var/lib/survey-bot
     whisper_model: ggml-small.bin
     whisper_model_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
     bot_user: surveybot
@@ -49,26 +50,22 @@
         version: main
         force: yes
 
-    - name: Create models directory
+    - name: Create data directories
       file:
-        path: "{{ bot_dir }}/models"
+        path: "{{ item }}"
         state: directory
         owner: "{{ bot_user }}"
         group: "{{ bot_user }}"
         mode: 0755
-
-    - name: Create audio directory
-      file:
-        path: "{{ bot_dir }}/audio"
-        state: directory
-        owner: "{{ bot_user }}"
-        group: "{{ bot_user }}"
-        mode: 0755
+      loop:
+        - "{{ data_dir }}/models"
+        - "{{ data_dir }}/audio"
+        - "{{ data_dir }}/backups"
 
     - name: Download whisper model (465MB)
       get_url:
         url: "{{ whisper_model_url }}"
-        dest: "{{ bot_dir }}/models/{{ whisper_model }}"
+        dest: "{{ data_dir }}/models/{{ whisper_model }}"
         owner: "{{ bot_user }}"
         group: "{{ bot_user }}"
         mode: 0644
@@ -104,7 +101,7 @@
 
     - name: Create database directory (writable)
       file:
-        path: "{{ bot_dir }}"
+        path: "{{ data_dir }}"
         owner: "{{ bot_user }}"
         group: "{{ bot_user }}"
         recurse: yes
@@ -127,7 +124,7 @@
         name: survey-bot db backup
         minute: "3"
         hour: "4"
-        job: "cp {{ bot_dir }}/survey.db {{ bot_dir }}/backups/survey_$(date +\\%Y\\%m\\%d).db"
+        job: "cp {{ data_dir }}/survey.db {{ data_dir }}/backups/survey_$(date +\\%Y\\%m\\%d).db"
         state: present
 
     - name: Create backups directory

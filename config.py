@@ -10,10 +10,13 @@ if not BOT_TOKEN:
 
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 
-BASE_DIR = Path(__file__).parent
-MODEL_PATH = BASE_DIR / "models" / "ggml-small.bin"
-DB_PATH = BASE_DIR / "survey.db"
-AUDIO_DIR = BASE_DIR / "audio"
+# Data directory — can be overridden by DATA_DIR env var (e.g. /var/lib/survey-bot)
+DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).parent))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+MODEL_PATH = DATA_DIR / "models" / "ggml-small.bin"
+DB_PATH = DATA_DIR / "survey.db"
+AUDIO_DIR = DATA_DIR / "audio"
 
 # whisper-cli binary location (installed via brew)
 WHISPER_BIN = "whisper-cli"

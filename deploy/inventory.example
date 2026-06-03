@@ -5,4 +5,4 @@
 
 # Пример готовой команды:
 # ansible-playbook -i inventory.ini playbook.yml \
-#   --extra-vars "bot_token=8571426172:AAF9b... admin_ids=АДМИН_ID"
+#   --extra-vars "bot_token=ВАШ_ТОКЕН_БОТА admin_ids=АДМИН_ID"

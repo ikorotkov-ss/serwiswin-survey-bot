@@ -30,7 +30,7 @@
 2. Отправьте команду: `/newbot`
 3. Введите имя: `SerwisWin Survey Bot`
 4. Введите username: `serwiswin_survey_bot` (или любой свободный)
-5. BotFather пришлёт токен — скопируйте его (вида `8571426172:AAF9b...`)
+5. BotFather пришлёт токен — скопируйте его (вида `ВАШ_ТОКЕН_БОТА`)
 
 ### Шаг 2. Узнать свой Telegram ID
 
@@ -60,7 +60,7 @@ cd serwiswin-survey-bot
 
 Пример:
 ```bash
-./deploy/setup.sh 123.123.123.123 8571426172:AAF9b-uYyrS1x1u07FMbiiUgVwrYKNN2bYo АДМИН_ID
+./deploy/setup.sh 123.123.123.123 ВАШ_ТОКЕН_БОТА АДМИН_ID
 ```
 
 ### Шаг 5. Проверить

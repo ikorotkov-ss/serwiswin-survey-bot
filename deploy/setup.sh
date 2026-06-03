@@ -7,13 +7,13 @@ set -euo pipefail
 #   2. Запустить:  ./setup.sh <IP_сервера> <BOT_TOKEN> <ADMIN_IDS>
 #
 # Пример:
-#   ./setup.sh 123.123.123.123 8571426172:AAF9b... АДМИН_ID
+#   ./setup.sh 123.123.123.123 ВАШ_ТОКЕН_БОТА АДМИН_ID
 
 if [ $# -lt 3 ]; then
     echo "Использование: $0 <IP_SERVERA> <BOT_TOKEN> <ADMIN_IDS>"
     echo ""
     echo "Пример:"
-    echo "  $0 1.2.3.4 8571426172:AAF9b... АДМИН_ID"
+    echo "  $0 1.2.3.4 ВАШ_ТОКЕН_БОТА АДМИН_ID"
     echo ""
     echo "ADMIN_IDS — через запятую, без пробелов"
     exit 1

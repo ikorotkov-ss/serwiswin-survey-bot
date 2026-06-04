@@ -277,10 +277,20 @@ async def _show_after_answer(chat_or_msg, context, user_id: int, last_qnum: int 
         )])
 
     if buttons:
-        await chat_or_msg.reply_text(
-            "Что дальше?",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        # Check which buttons are shown to pick the right text
+        has_append = any(b[0].callback_data.startswith("append_") for b in buttons)
+        has_next = any(b[0].callback_data in ("next_part", "next_block", "finish_survey") for b in buttons)
+
+        if has_append and not has_next:
+            text = "Ты можешь дополнить ответ или продолжить отвечать на вопросы."
+        elif has_append and has_next:
+            text = "Все вопросы этой части отвечены! Можешь дополнить или перейти дальше."
+        elif has_next:
+            text = "Все вопросы этой части отвечены! Переходи дальше."
+        else:
+            text = "Выбери действие:"
+
+        await chat_or_msg.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _show_status(chat_or_msg, user_id: int, context):

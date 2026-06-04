@@ -114,9 +114,24 @@ async def _send_question(update_or_query, context, question_number: int):
     return await update_or_query.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 
+async def _get_user_id(obj):
+    """Extract user_id from Update, CallbackQuery, Message, or User object."""
+    if hasattr(obj, "effective_user") and obj.effective_user:
+        return obj.effective_user.id
+    if hasattr(obj, "from_user") and obj.from_user:
+        return obj.from_user.id
+    if hasattr(obj, "chat") and obj.chat:
+        return obj.chat.id
+    if hasattr(obj, "id"):
+        return obj.id
+    return None
+
+
 async def _show_progress_and_next(update_or_query, context):
     """After answer/skip: show progress bar, determine next action."""
-    user_id = update_or_query.effective_user.id
+    user_id = await _get_user_id(update_or_query)
+    if not user_id:
+        return
     role = context.user_data.get("role")
     if not role:
         return
@@ -136,10 +151,10 @@ async def _show_progress_and_next(update_or_query, context):
     if context.user_data.get("answering_skipped"):
         skipped = get_skipped_questions(user_id)
         if skipped:
-            await update_or_query.effective_user.send_message(
+            await update_or_query.reply_text(
                 f"Следующий пропущенный вопрос:"
-            )
-            await _send_question(update_or_query.effective_user, context, skipped[0])
+            ) if hasattr(update_or_query, "reply_text") else await context.bot.send_message(chat_id=user_id, text="Следующий пропущенный вопрос:")
+            await _send_question(update_or_query, context, skipped[0])
             return
         context.user_data["answering_skipped"] = False
 
@@ -152,7 +167,7 @@ async def _show_progress_and_next(update_or_query, context):
     if not block_complete:
         for qnum in block_qnums:
             if qnum not in answered_or_skipped:
-                await _send_question(update_or_query.effective_user, context, qnum)
+                await _send_question(update_or_query, context, qnum)
                 return
 
     # Block is complete; check for skipped in this block
@@ -164,7 +179,7 @@ async def _show_progress_and_next(update_or_query, context):
             [InlineKeyboardButton("✅ Давай ответим", callback_data="retry_skipped")],
             [InlineKeyboardButton("❌ К следующему блоку", callback_data="next_block")],
         ]
-        await update_or_query.effective_user.send_message(
+        await update_or_query.reply_text(
             f"Блок «{current_block}» завершён!\n"
             f"У тебя осталось {len(skipped_in_block)} пропущенных вопросов. "
             f"Хочешь ответить на них сейчас?",
@@ -177,10 +192,7 @@ async def _show_progress_and_next(update_or_query, context):
     if next_block_idx < len(blocks):
         update_user_block(user_id, next_block_idx)
         context.user_data["current_block"] = next_block_idx
-        await update_or_query.effective_user.send_message("✅ Блок завершён! Переходим к следующему.")
-        await _send_block_welcome_and_first_question(
-            update_or_query.effective_user, context, next_block_idx
-        )
+        await update_or_query.reply_text("✅ Блок завершён! Переходим к следующему.")
     else:
         # All blocks done → check for global skipped
         all_skipped = get_skipped_questions(user_id)
@@ -189,7 +201,7 @@ async def _show_progress_and_next(update_or_query, context):
                 [InlineKeyboardButton("✅ Вернуться к пропущенным", callback_data="retry_skipped")],
                 [InlineKeyboardButton("🏁 Завершить опрос", callback_data="finish_survey")],
             ]
-            await update_or_query.effective_user.send_message(
+            await update_or_query.reply_text(
                 f"Ты прошёл все блоки! Осталось {len(all_skipped)} пропущенных вопросов. "
                 f"Вернёмся к ним?",
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -198,7 +210,7 @@ async def _show_progress_and_next(update_or_query, context):
             await _send_final_message(update_or_query)
 
 
-async def _send_block_welcome_and_first_question(update_or_query, context, block_index: int):
+async def _send_block_welcome_and_first_question(chat_or_msg, context, block_index: int, user_id: int | None = None):
     """Send block welcome message, then first question."""
     role = context.user_data.get("role")
     if not role:
@@ -206,11 +218,13 @@ async def _send_block_welcome_and_first_question(update_or_query, context, block
     blocks = get_blocks_for_role(role)
     block_name = blocks[block_index]
 
+    if user_id is None:
+        user_id = chat_or_msg.effective_user.id if hasattr(chat_or_msg, "effective_user") else chat_or_msg.chat.id
+
     welcome = get_block_welcome(block_name)
-    await update_or_query.reply_text(welcome)
+    await chat_or_msg.reply_text(welcome)
 
     block_questions = get_questions_in_block(block_name, role)
-    user_id = update_or_query.effective_user.id
     user_responses = get_user_responses(user_id)
     answered = {r["question_number"] for r in user_responses}
 
@@ -221,11 +235,13 @@ async def _send_block_welcome_and_first_question(update_or_query, context, block
             break
 
     if first_q:
-        await _send_question(update_or_query, context, first_q)
+        await _send_question(chat_or_msg, context, first_q)
 
 
 async def _send_final_message(update_or_query):
-    user_id = update_or_query.effective_user.id
+    user_id = await _get_user_id(update_or_query)
+    if not user_id:
+        return
     mark_user_finished(user_id)
     msg = (
         "🎉 Спасибо! Ты ответил на все вопросы.\n\n"
@@ -291,7 +307,7 @@ async def role_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     roles_before = get_or_create_user(user.id, user.username or user.full_name)
     if roles_before.get("current_block", 0) == 0:
         await query.message.reply_text("С возвращением! Продолжим с того же места.")
-    await _send_block_welcome_and_first_question(query.message, context, 0)
+    await _send_block_welcome_and_first_question(query.message, context, 0, user_id=user.id)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,7 +362,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update_user_block(user.id, next_block)
             context.user_data["current_block"] = next_block
             await query.edit_message_text("Переходим к следующему блоку.")
-            await _send_block_welcome_and_first_question(query.message, context, next_block)
+            await _send_block_welcome_and_first_question(query.message, context, next_block, user_id=user.id)
         else:
             await _send_final_message(query)
         return
@@ -356,7 +372,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         role = context.user_data.get("role")
         current_block_idx = context.user_data.get("current_block", 0)
         await query.edit_message_text("Хорошо, продолжим с текущего блока.")
-        await _send_block_welcome_and_first_question(query.message, context, current_block_idx)
+        await _send_block_welcome_and_first_question(query.message, context, current_block_idx, user_id=user.id)
         return
 
     # Finish survey (decline skipped after all blocks)
@@ -513,16 +529,17 @@ async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYP
     if update and update.effective_chat:
         try:
             await update.effective_chat.send_message(
-                "❌ Произошла внутренняя ошибка. Администратор уже уведомлён."
+                "❌ Что-то пошло не так. Нажмите /start чтобы продолжить опрос."
             )
         except Exception:
             pass
+    # Only admins get the full traceback
     try:
-        await send_immediate_alert(
-            context.application,
-            "Unhandled Exception",
-            f"```\n{''.join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))[:3000]}```",
-        )
+        if update and update.effective_user and _is_admin(update.effective_user.id):
+            await update.effective_user.send_message(
+                f"❌ Ошибка:\n```\n{''.join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))[:3000]}```",
+                parse_mode="Markdown",
+            )
     except Exception:
         pass
 

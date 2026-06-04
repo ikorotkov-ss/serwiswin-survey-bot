@@ -1,9 +1,9 @@
 import sqlite3
 from pathlib import Path
-from config import DB_PATH
 
 
 def get_connection():
+    from config import DB_PATH
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
@@ -17,6 +17,7 @@ def db_migrate():
     migrations = [
         "ALTER TABLE questions ADD COLUMN optional INTEGER DEFAULT 0",
         "ALTER TABLE responses ADD COLUMN status TEXT DEFAULT ''",
+        "ALTER TABLE users ADD COLUMN last_reminder TEXT",
         """
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,

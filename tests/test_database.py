@@ -249,14 +249,15 @@ class TestUserProgressIntegration:
         assert progress["total_optional"] == 2
 
     def test_skipped_questions_func(self, tmp_path):
-        # Isolated test with unique user ID
+        # Fresh DB path — isolate from any previous DB state
         from database import (
             get_or_create_user, load_questions, mark_skipped, get_skipped_questions,
         )
         from survey_data import questions as qs
 
         import config
-        config.DB_PATH = tmp_path / "test_skipped_func.db"
+        db_path = str(tmp_path / "test_skipped_func.db")
+        config.DB_PATH = db_path
 
         from database import init_db, db_migrate
         init_db()

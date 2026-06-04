@@ -1,0 +1,13 @@
+[Unit]
+Description=SerwisWin Survey Bot Reminder
+After=network.target
+
+[Service]
+Type=oneshot
+User=surveybot
+Group=surveybot
+Environment=DATA_DIR=/var/lib/survey-bot
+WorkingDirectory=/opt/survey-bot
+ExecStart=/usr/bin/python3 /opt/survey-bot/reminder.py
+StandardOutput=journal
+StandardError=journal

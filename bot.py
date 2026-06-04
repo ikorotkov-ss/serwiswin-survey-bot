@@ -287,19 +287,11 @@ async def role_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(f"Вы выбрали: **{role_name}**", parse_mode="Markdown")
 
-    # Check for skipped questions first (re-entry)
-    skipped = get_skipped_questions(user.id)
-    if skipped:
-        keyboard = [
-            [InlineKeyboardButton("✅ Давай ответим", callback_data="retry_skipped")],
-            [InlineKeyboardButton("❌ Продолжить с текущего блока", callback_data="continue_current")],
-        ]
-        await query.message.reply_text(
-            f"У тебя осталось {len(skipped)} пропущенных вопросов. Ответишь на них сейчас?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-    else:
-        await _send_block_welcome_and_first_question(query.message, context, 0)
+    # Re-entry: just continue from current block, skip mentions only after block
+    roles_before = get_or_create_user(user.id, user.username or user.full_name)
+    if roles_before.get("current_block", 0) == 0:
+        await query.message.reply_text("С возвращением! Продолжим с того же места.")
+    await _send_block_welcome_and_first_question(query.message, context, 0)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -629,7 +621,7 @@ def main():
     app.add_handler(CommandHandler("health", health_command))
 
     app.add_handler(CallbackQueryHandler(role_callback, pattern="^role_"))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(skip_|retry_skipped|next_block|continue_current|finish_survey|instr_voice_|instr_text_)"))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(skip_|retry_skipped|next_block|finish_survey|instr_voice_|instr_text_)"))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

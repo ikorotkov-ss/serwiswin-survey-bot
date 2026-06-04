@@ -249,6 +249,7 @@ class TestUserProgressIntegration:
         assert progress["total_optional"] == 2
 
     def test_skipped_questions_func(self, tmp_path):
+        # Isolated test with unique user ID
         from database import (
             get_or_create_user, load_questions, mark_skipped, get_skipped_questions,
         )
@@ -262,12 +263,13 @@ class TestUserProgressIntegration:
         db_migrate()
         load_questions(qs)
 
-        get_or_create_user(99999, "skip_user")
-        mark_skipped(99999, 3)
-        mark_skipped(99999, 7)
-        mark_skipped(99999, 15)
+        user_id = 555501  # unique ID to avoid cross-test contamination
+        get_or_create_user(user_id, "skip_user")
+        mark_skipped(user_id, 3)
+        mark_skipped(user_id, 7)
+        mark_skipped(user_id, 15)
 
-        skipped = get_skipped_questions(99999)
+        skipped = get_skipped_questions(user_id)
         assert skipped == [3, 7, 15]
 
     def test_skipped_empty(self, tmp_path):

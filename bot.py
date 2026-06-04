@@ -2,7 +2,6 @@ import os
 import csv
 import io
 import traceback
-from pathlib import Path
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,17 +16,17 @@ from telegram.ext import (
 
 from config import BOT_TOKEN, AUDIO_DIR, ADMIN_IDS
 from database import (
-    init_db, db_migrate, load_questions, save_response, get_stats, get_all_responses, get_question,
+    init_db, db_migrate, load_questions, save_response, get_stats, get_all_responses,
     get_or_create_user, update_user_role, update_user_block, update_user_activity,
-    mark_user_finished, get_skipped_questions, get_user_responses, get_user_progress,
-    mark_skipped,
+    mark_user_finished, get_user_responses, get_current_block, mark_voice_pending,
 )
 from survey_data import (
     questions, format_questions, get_blocks_for_role,
     get_questions_in_block, is_optional, get_block_welcome,
+    BLOCK_ORDER,
 )
-from transcriber import transcribe, parse_question_number
-from monitor import log_info, log_error, startup_alert, health_check, send_pending_alerts, send_immediate_alert
+from transcriber import parse_question_number
+from monitor import log_info, log_error, health_check
 
 
 # Ensure audio directory exists
@@ -46,76 +45,37 @@ ROLES = {
     "masters": "Мастера (выездные + реновация)",
 }
 
+# Block where renovation question should be asked (for masters)
+RENOVATION_PROMPT_BLOCK = "Мастера (выезд)"
+
 # ─── Helpers ──────────────────────────────────────────────────────────
 
 
-def _build_progress_bar(progress: dict, width: int = 12) -> str:
-    """Build progress display string with mandatory + optional counts."""
-    mandatory = progress["mandatory_answered"]
-    total_mandatory = progress["total_mandatory"]
-
-    if total_mandatory > 0:
-        pct = int(mandatory / total_mandatory * 100)
-        filled = round(pct / 100 * width)
-        bar = "█" * filled + "░" * (width - filled)
-        parts = [f"📊 Прогресс: {bar} {mandatory}/{total_mandatory} обязательных"]
-    else:
-        parts = []
-
-    if progress["total_optional"] > 0:
-        parts.append(f"{progress['optional_answered']}/{progress['total_optional']} опциональных")
-
-    return " + ".join(parts)
+def _get_block_part_indices(block_name: str, role: str) -> list[list[int]]:
+    """Return list of question number lists, each up to 8 questions."""
+    qs = get_questions_in_block(block_name, role)
+    result = []
+    chunk_size = 8
+    for i in range(0, len(qs), chunk_size):
+        result.append([q["number"] for q in qs[i:i + chunk_size]])
+    return result
 
 
-async def _send_or_edit(update_or_query, text, **kwargs):
-    """Send a new message or edit existing one depending on context."""
-    if isinstance(update_or_query, str):
-        # Raw chat_id string — shouldn't happen, here for safety
-        return None
-    if hasattr(update_or_query, "edit_message_text"):
-        try:
-            return await update_or_query.edit_message_text(text, **kwargs)
-        except Exception:
-            pass
-    # Fallback: reply to the message
-    return await update_or_query.reply_text(text, **kwargs)
-
-
-async def _send_question(update_or_query, context, question_number: int):
-    """Send a single question with action buttons."""
-    question = get_question(question_number)
-    if not question:
-        return
-
-    opt_tag = " (опционально)" if is_optional(question_number) else ""
-    text = (
-        f"**Вопрос {question_number}**{opt_tag}\n\n"
-        f"{question['text']}\n\n"
-        f"Ответьте голосом или текстом."
-    )
-
-    keyboard = [
-        [InlineKeyboardButton("🎙 Ответить голосом", callback_data=f"instr_voice_{question_number}")],
-        [InlineKeyboardButton("✏️ Написать текст", callback_data=f"instr_text_{question_number}")],
-        [InlineKeyboardButton("⏭ Пропустить", callback_data=f"skip_{question_number}")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    context.user_data["current_question"] = question_number
-
-    if hasattr(update_or_query, "edit_message_text"):
-        try:
-            return await update_or_query.edit_message_text(
-                text, reply_markup=reply_markup, parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-    return await update_or_query.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+async def _ensure_role(context, user_id: int) -> str | None:
+    """Get role from context or DB. Returns role or None."""
+    role = context.user_data.get("role")
+    if not role:
+        user_data = get_or_create_user(user_id, None)
+        role = user_data.get("role")
+        if role:
+            block_idx = user_data.get("current_block", 0)
+            context.user_data["role"] = role
+            context.user_data["current_block"] = block_idx
+    return role
 
 
 async def _get_user_id(obj):
-    """Extract user_id from Update, CallbackQuery, Message, or User object."""
+    """Extract user_id from Update, Message, or User object."""
     if hasattr(obj, "effective_user") and obj.effective_user:
         return obj.effective_user.id
     if hasattr(obj, "from_user") and obj.from_user:
@@ -127,129 +87,202 @@ async def _get_user_id(obj):
     return None
 
 
-async def _show_progress_and_next(update_or_query, context):
-    """After answer/skip: show progress bar, determine next action."""
-    user_id = await _get_user_id(update_or_query)
-    if not user_id:
-        return
-    role = context.user_data.get("role")
-    if not role:
-        return
-
-    blocks = get_blocks_for_role(role)
-    current_block_idx = context.user_data.get("current_block", 0)
-    current_block = blocks[current_block_idx]
-    block_questions = get_questions_in_block(current_block, role)
-    block_qnums = [q["number"] for q in block_questions]
-
-    # Progress
-    progress = get_user_progress(user_id, role)
-    progress_text = _build_progress_bar(progress)
-    await _send_or_edit(update_or_query, progress_text)
-
-    # If answering skipped questions mode
-    if context.user_data.get("answering_skipped"):
-        skipped = get_skipped_questions(user_id)
-        if skipped:
-            await update_or_query.reply_text(
-                f"Следующий пропущенный вопрос:"
-            ) if hasattr(update_or_query, "reply_text") else await context.bot.send_message(chat_id=user_id, text="Следующий пропущенный вопрос:")
-            await _send_question(update_or_query, context, skipped[0])
-            return
-        context.user_data["answering_skipped"] = False
-
-    # Check if current block is complete
-    user_responses = get_user_responses(user_id)
-    answered_or_skipped = {r["question_number"] for r in user_responses}
-
-    block_complete = all(q in answered_or_skipped for q in block_qnums)
-
-    if not block_complete:
-        for qnum in block_qnums:
-            if qnum not in answered_or_skipped:
-                await _send_question(update_or_query, context, qnum)
-                return
-
-    # Block is complete; check for skipped in this block
-    all_skipped = get_skipped_questions(user_id)
-    skipped_in_block = [q for q in block_qnums if q in all_skipped]
-
-    if skipped_in_block:
-        keyboard = [
-            [InlineKeyboardButton("✅ Давай ответим", callback_data="retry_skipped")],
-            [InlineKeyboardButton("❌ К следующему блоку", callback_data="next_block")],
-        ]
-        await update_or_query.reply_text(
-            f"Блок «{current_block}» завершён!\n"
-            f"У тебя осталось {len(skipped_in_block)} пропущенных вопросов. "
-            f"Хочешь ответить на них сейчас?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-        return
-
-    # No skipped, move to next block or finish
-    next_block_idx = current_block_idx + 1
-    if next_block_idx < len(blocks):
-        update_user_block(user_id, next_block_idx)
-        context.user_data["current_block"] = next_block_idx
-        await update_or_query.reply_text("✅ Блок завершён! Переходим к следующему.")
-    else:
-        # All blocks done → check for global skipped
-        all_skipped = get_skipped_questions(user_id)
-        if all_skipped:
-            keyboard = [
-                [InlineKeyboardButton("✅ Вернуться к пропущенным", callback_data="retry_skipped")],
-                [InlineKeyboardButton("🏁 Завершить опрос", callback_data="finish_survey")],
-            ]
-            await update_or_query.reply_text(
-                f"Ты прошёл все блоки! Осталось {len(all_skipped)} пропущенных вопросов. "
-                f"Вернёмся к ним?",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-            )
-        else:
-            await _send_final_message(update_or_query)
-
-
-async def _send_block_welcome_and_first_question(chat_or_msg, context, block_index: int, user_id: int | None = None):
-    """Send block welcome message, then first question."""
+async def _send_block_intro(chat_or_msg, context, block_index: int, user_id: int):
+    """Show welcome + all parts of a block."""
     role = context.user_data.get("role")
     if not role:
         return
     blocks = get_blocks_for_role(role)
     block_name = blocks[block_index]
+    total_blocks = len(blocks)
+    parts = _get_block_part_indices(block_name, role)
 
-    if user_id is None:
-        user_id = chat_or_msg.effective_user.id if hasattr(chat_or_msg, "effective_user") else chat_or_msg.chat.id
-
+    # Welcome message
     welcome = get_block_welcome(block_name)
     await chat_or_msg.reply_text(welcome)
 
-    block_questions = get_questions_in_block(block_name, role)
+    # Get answered question numbers
     user_responses = get_user_responses(user_id)
-    answered = {r["question_number"] for r in user_responses}
+    answered_nums = set()
+    for r in user_responses:
+        if r.get("status") == "answered" and r.get("question_number"):
+            answered_nums.add(r["question_number"])
 
-    first_q = None
-    for q in block_questions:
-        if q["number"] not in answered:
-            first_q = q["number"]
-            break
+    # Show each part as separate message
+    for part_idx, q_numbers in enumerate(parts):
+        lines = []
+        if part_idx == 0:
+            lines.append(f"📋 **Блок {block_index + 1} из {total_blocks}: {block_name}**\n")
+        else:
+            lines.append(f"📋 **{block_name} (продолжение)**\n")
 
-    if first_q:
-        await _send_question(chat_or_msg, context, first_q)
+        for qnum in q_numbers:
+            q = get_question_data(qnum)
+            if not q:
+                continue
+            opt_tag = " (опц.)" if is_optional(qnum) else ""
+            prefix = "✅" if qnum in answered_nums else f"{qnum}."
+            lines.append(f"{prefix} {q['text']}{opt_tag}")
+
+        lines.extend([
+            "",
+            "📲 **Как отвечать:**",
+            "Начинай с номера вопроса — например: «Вопрос 5. ...»",
+            "Можно голосом или текстом.",
+        ])
+        await chat_or_msg.reply_text("\n".join(lines))
 
 
-async def _send_final_message(update_or_query):
-    user_id = await _get_user_id(update_or_query)
-    if not user_id:
+def get_question_data(qnum: int) -> dict | None:
+    """Get question dict by number from survey_data."""
+    for q in questions:
+        if q["number"] == qnum:
+            return q
+    return None
+
+
+def _is_block_fully_answered(user_id: int, block_name: str, role: str) -> bool:
+    """Check if ALL questions in a block have at least one answered response."""
+    qs = get_questions_in_block(block_name, role)
+    all_qnums = {q["number"] for q in qs}
+    user_responses = get_user_responses(user_id)
+    answered = set()
+    for r in user_responses:
+        if r.get("status") == "answered" and r.get("question_number") in all_qnums:
+            answered.add(r["question_number"])
+    return all_qnums.issubset(answered)
+
+
+def _count_block_answered(user_id: int, block_name: str, role: str) -> int:
+    """Count how many unique questions have been answered in a block."""
+    qs = get_questions_in_block(block_name, role)
+    all_qnums = {q["number"] for q in qs}
+    user_responses = get_user_responses(user_id)
+    answered = set()
+    for r in user_responses:
+        if r.get("status") == "answered" and r.get("question_number") in all_qnums:
+            answered.add(r["question_number"])
+    return len(answered)
+
+
+def _count_voice_pending(user_id: int, block_name: str, role: str) -> int:
+    """Count voice_saved responses without a question number, in this block's question range."""
+    qs = get_questions_in_block(block_name, role)
+    all_qnums = {q["number"] for q in qs}
+    user_responses = get_user_responses(user_id)
+    return sum(1 for r in user_responses
+               if r.get("status") == "voice_saved" and r.get("question_number") is None)
+
+
+def _is_same_block_question(qnum: int, block_name: str, role: str) -> bool:
+    """Check if a question number belongs to the current block."""
+    qs = get_questions_in_block(block_name, role)
+    return any(q["number"] == qnum for q in qs)
+
+
+async def _show_after_answer(chat_or_msg, context, user_id: int, last_qnum: int | None = None):
+    """After saving an answer: show buttons and check block status."""
+    role = context.user_data.get("role")
+    if not role:
         return
-    mark_user_finished(user_id)
-    msg = (
-        "🎉 Спасибо! Ты ответил на все вопросы.\n\n"
-        "Твои ответы очень помогут нашей рекламе и контенту. Если вспомнишь "
-        "ещё что-то — просто напиши номер вопроса и ответ, я приму.\n\n"
-        "Хорошего дня!"
-    )
-    await update_or_query.reply_text(msg)
+    current_block_idx = context.user_data.get("current_block", 0)
+    blocks = get_blocks_for_role(role)
+    block_name = blocks[current_block_idx]
+
+    # Check if we should show the renovation prompt after "Мастера (выезд)"
+    if role == "masters" and block_name == RENOVATION_PROMPT_BLOCK:
+        if _is_block_fully_answered(user_id, block_name, role):
+            # Check if user already answered the renovation question
+            skip_renov = context.user_data.get("skip_renovation")
+            if skip_renov is None:
+                keyboard = [
+                    [InlineKeyboardButton("✅ Да, делаю реновацию", callback_data="renovation_yes")],
+                    [InlineKeyboardButton("❌ Нет, не моё", callback_data="renovation_no")],
+                ]
+                await chat_or_msg.reply_text(
+                    "✅ Все вопросы блока «Мастера (выезд)» отвечены!\n\n"
+                    "У нас есть блок про реновацию деревянных окон (вопросы 26-31). "
+                    "Ты занимаешься реновацией окон?",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+                return
+
+    # Determine block completion
+    block_done = _is_block_fully_answered(user_id, block_name, role)
+
+    voice_pending = _count_voice_pending(user_id, block_name, role)
+
+    # Build buttons
+    buttons = []
+    if last_qnum and _is_same_block_question(last_qnum, block_name, role):
+        buttons.append([InlineKeyboardButton(f"📝 Дополнить вопрос {last_qnum}",
+                        callback_data=f"append_{last_qnum}")])
+
+    if voice_pending > 0:
+        await chat_or_msg.reply_text(
+            f"📌 У тебя {voice_pending} голосовое без номера вопроса. "
+            "Напиши номер вопроса, на который оно было."
+        )
+
+    if block_done and voice_pending == 0:
+        if current_block_idx + 1 < len(blocks):
+            next_block_name = blocks[current_block_idx + 1]
+            buttons.append([InlineKeyboardButton(
+                f"➡️ К следующему блоку: {next_block_name}",
+                callback_data="next_block",
+            )])
+        else:
+            buttons.append([InlineKeyboardButton(
+                "🏁 Завершить опрос",
+                callback_data="finish_survey",
+            )])
+
+    if buttons:
+        await chat_or_msg.reply_text(
+            "Что дальше?",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+
+async def _show_status(chat_or_msg, user_id: int, context):
+    """Show detailed status of current block."""
+    role = context.user_data.get("role")
+    if not role:
+        await chat_or_msg.reply_text("Сначала выбери роль через /start.")
+        return
+
+    blocks = get_blocks_for_role(role)
+    current_block_idx = context.user_data.get("current_block", 0)
+    block_name = blocks[current_block_idx]
+    qs = get_questions_in_block(block_name, role)
+    total = len(qs)
+    answered = _count_block_answered(user_id, block_name, role)
+    pending_voice = _count_voice_pending(user_id, block_name, role)
+
+    user_responses = get_user_responses(user_id)
+    answered_nums = set()
+    for r in user_responses:
+        if r.get("status") == "answered" and r.get("question_number") and \
+           _is_same_block_question(r["question_number"], block_name, role):
+            answered_nums.add(r["question_number"])
+
+    lines = [
+        f"📋 **Блок {current_block_idx + 1} из {len(blocks)}: {block_name}**",
+        f"Отвечено {answered} из {total}\n",
+    ]
+
+    for q in qs:
+        opt_tag = " (опц.)" if is_optional(q["number"]) else ""
+        prefix = "✅" if q["number"] in answered_nums else f"⬜"
+        lines.append(f"{prefix} Вопрос {q['number']}. {q['text']}{opt_tag}")
+
+    if pending_voice > 0:
+        lines.extend([
+            "",
+            f"📌 {pending_voice} голосовое без номера — напиши номер вопроса для него.",
+        ])
+
+    await chat_or_msg.reply_text("\n".join(lines))
 
 
 # ─── Handlers ─────────────────────────────────────────────────────────
@@ -257,23 +290,46 @@ async def _send_final_message(update_or_query):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    get_or_create_user(user.id, user.username or user.full_name)
+    user_data = get_or_create_user(user.id, user.username or user.full_name)
 
+    # Already finished
+    if user_data.get("finished"):
+        await update.message.reply_text(
+            "🎉 Спасибо! Ты уже прошёл опрос.\n\n"
+            "Если хочешь посмотреть свои вопросы — напиши /questions.\n"
+            "Хорошего дня!"
+        )
+        return
+
+    # Has role — resume from current block
+    if user_data.get("role"):
+        role = user_data["role"]
+        block_idx = user_data.get("current_block", 0)
+        context.user_data["role"] = role
+        context.user_data["current_block"] = block_idx
+
+        await _send_block_intro(update.message, context, block_idx, user.id)
+        await _show_after_answer(update.message, context, user.id)
+        return
+
+    # No role — show welcome
     text = (
         "👋 Всем привет!\n\n"
-        "Я подготовил опросник, чтобы собрать реальные истории и фразы клиентов. "
-        "Это нужно для нашей рекламы и видео — чтобы тексты были живыми, а не выдуманными.\n\n"
-        "Вы с клиентами общаетесь каждый день, лучше всех знаете, что они говорят, "
-        "из-за чего переживают, за что благодарят. Поделитесь этим.\n\n"
+        "Я подготовил опросник, чтобы собрать реальные истории и фразы "
+        "из работы с клиентами. Это для нашей рекламы и соцсетей — нужно, "
+        "чтобы тексты были живыми, а не выдуманными.\n\n"
+        "Вы с клиентами общаетесь каждый день и лучше всех знаете, "
+        "что они говорят, из-за чего переживают, за что благодарят. "
+        "Поделитесь этим.\n\n"
         "📲 **Как отвечать:**\n"
-        "Читаете вопрос, вспоминаете 2-3 конкретных случая, "
-        "записываете голосовое или пишете текстом. На всё уйдёт 20-30 минут.\n\n"
-        "📝 **По формату:** называйте номер вопроса в начале каждого сообщения. "
-        "Например: «Вопрос 5. Когда клиенты отказываются, они чаще всего говорят...» "
-        "Потом переходите к следующему. Так мы ничего не потеряем.\n\n"
-        "**Важно** не обобщать, а рассказывать как было. Вместо «клиентам дорого» — опишите случай, "
-        "когда клиент конкретно так сказал. Страх, радость, злость, недоверие — всё пригодится.\n\n"
-        "Выберите свою роль, чтобы я показал ваши вопросы:"
+        "Читаешь вопрос, вспоминаешь 2-3 конкретных случая — "
+        "записываешь голосовое или пишешь текстом.\n\n"
+        "📝 **Главное правило:** называй номер вопроса в начале ответа.\n"
+        "Пример: «Вопрос 5. Когда клиенты отказываются, они говорят...»\n\n"
+        "**Важно:** не обобщай, а рассказывай как было. "
+        "Вместо «клиентам дорого» — опиши случай, когда клиент "
+        "конкретно так сказал.\n\n"
+        "На всё уйдёт 20-30 минут. Выбери свою роль:"
     )
 
     keyboard = [
@@ -293,117 +349,24 @@ async def role_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     role_name = ROLES.get(role, role)
     user = update.effective_user
 
-    # Save role in DB and context
     update_user_role(user.id, role)
     update_user_block(user.id, 0)
     update_user_activity(user.id)
     context.user_data["role"] = role
     context.user_data["current_block"] = 0
-    context.user_data["answering_skipped"] = False
 
-    await query.edit_message_text(f"Вы выбрали: **{role_name}**", parse_mode="Markdown")
+    await query.edit_message_text(f"Ты выбрал: **{role_name}**", parse_mode="Markdown")
 
-    # Re-entry: just continue from current block, skip mentions only after block
-    roles_before = get_or_create_user(user.id, user.username or user.full_name)
-    if roles_before.get("current_block", 0) == 0:
-        await query.message.reply_text("С возвращением! Продолжим с того же места.")
-    await _send_block_welcome_and_first_question(query.message, context, 0, user_id=user.id)
-
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle all inline keyboard callbacks."""
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user = update.effective_user
-
-    # Instruction buttons — send as new message, don't replace the question
-    if data.startswith("instr_voice_") or data.startswith("instr_text_"):
-        qnum = data.replace("instr_voice_", "").replace("instr_text_", "")
-        instr = (
-            "🎙 Отправь голосовое сообщение с ответом.\n"
-            f"Начни с «Вопрос {qnum}» — так я пойму, на какой вопрос ты отвечаешь."
-        ) if "voice" in data else (
-            "✏️ Напиши текстовый ответ.\n"
-            f"Начни с «Вопрос {qnum}» — так я пойму, на какой вопрос ты отвечаешь."
-        )
-        # Send as new message so the question stays visible
-        await query.message.reply_text(instr)
-        return
-
-    # Skip question
-    if data.startswith("skip_"):
-        qnum = int(data.replace("skip_", ""))
-        mark_skipped(user.id, qnum)
-        update_user_activity(user.id)
-        await query.edit_message_text(f"✅ Вопрос {qnum} пропущен.")
-        await _show_progress_and_next(query, context)
-        return
-
-    # Retry skipped questions
-    if data == "retry_skipped":
-        skipped = get_skipped_questions(user.id)
-        if skipped:
-            context.user_data["answering_skipped"] = True
-            await query.edit_message_text(
-                f"Осталось ответить на {len(skipped)} вопросов. Поехали!"
-            )
-            await _send_question(query.message, context, skipped[0])
-        else:
-            await query.edit_message_text("Пропущенных вопросов больше нет!")
-        return
-
-    # Next block
-    if data == "next_block":
-        context.user_data["answering_skipped"] = False
-        next_block = context.user_data.get("current_block", 0) + 1
-        role = context.user_data.get("role")
-        blocks = get_blocks_for_role(role)
-        if next_block < len(blocks):
-            update_user_block(user.id, next_block)
-            context.user_data["current_block"] = next_block
-            await query.edit_message_text("Переходим к следующему блоку.")
-            await _send_block_welcome_and_first_question(query.message, context, next_block, user_id=user.id)
-        else:
-            await _send_final_message(query)
-        return
-
-    # Continue with current block (decline skipped on re-entry)
-    if data == "continue_current":
-        role = context.user_data.get("role")
-        current_block_idx = context.user_data.get("current_block", 0)
-        await query.edit_message_text("Хорошо, продолжим с текущего блока.")
-        await _send_block_welcome_and_first_question(query.message, context, current_block_idx, user_id=user.id)
-        return
-
-    # Finish survey (decline skipped after all blocks)
-    if data == "finish_survey":
-        await _send_final_message(query)
-        return
-
-
-async def questions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    role = context.user_data.get("role")
-    if not role:
-        await start(update, context)
-        return
-
-    role_name = ROLES.get(role, role)
-    questions_text = format_questions(role)
-    await update.message.reply_text(
-        f"Ваши вопросы ({role_name}):\n\n{questions_text}"
-    )
+    await _send_block_intro(query.message, context, 0, user.id)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle incoming voice messages — download, transcribe, save."""
+    """Handle voice messages — save .ogg and ask for question number."""
     user = update.effective_user
-
-    # Require role selection first
-    if not context.user_data.get("role"):
+    role = await _ensure_role(context, user.id)
+    if not role:
         await update.message.reply_text(
-            "Сначала выберите роль, чтобы я знал, какие вопросы вам задавать.\n"
-            "Напишите /start для выбора роли."
+            "Сначала выбери роль через /start."
         )
         return
 
@@ -416,113 +379,241 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(ogg_path)
     except Exception as e:
         log_error("voice_download", e, {"user_id": user.id})
-        await update.message.reply_text("❌ Не удалось загрузить голосовое. Попробуйте ещё раз.")
+        await update.message.reply_text("❌ Не удалось загрузить голосовое. Попробуй ещё раз.")
         return
 
-    await update.message.reply_text("🎧 Получил голосовое, расшифровываю...")
-
-    text = transcribe(str(ogg_path))
-
-    if not text:
-        await update.message.reply_text(
-            "❌ Не удалось расшифровать. Попробуйте записать ещё раз или напишите текстом."
-        )
-        return
-
-    question_number = parse_question_number(text)
-
-    save_response(
+    row_id = mark_voice_pending(
         user_id=user.id,
         username=user.username or user.full_name,
-        question_number=question_number,
-        raw_text=text,
         audio_path=str(ogg_path),
-        status="answered",
     )
+    context.user_data["pending_voice_id"] = row_id
     update_user_activity(user.id)
 
-    if question_number:
-        await update.message.reply_text(
-            f"✅ Вопрос {question_number} принят. Спасибо!\n\n"
-            f"📝 Расшифровка: {text[:200]}{'...' if len(text) > 200 else ''}"
-        )
-        await _show_progress_and_next(update.message, context)
-    else:
-        await update.message.reply_text(
-            f"✅ Голосовое сохранено. Спасибо!\n\n"
-            f"📝 Расшифровка: {text[:200]}{'...' if len(text) > 200 else ''}\n\n"
-            f"👇 Напишите номер вопроса, на который вы ответили (просто цифру 1, 2, 3...). "
-            f"Если хотите начать новый ответ — просто отправьте голосовое или текст с номером вопроса в начале."
-        )
-        context.user_data["pending_question"] = {"audio_path": str(ogg_path), "transcript": text}
+    await update.message.reply_text(
+        "✅ Голосовое принято!\n"
+        "Напиши номер вопроса, на который ответил."
+    )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages as written answers."""
+    """Handle text messages — answer, question number mapping, or command."""
     text = update.message.text.strip()
     user = update.effective_user
 
-    # Log user ID for admin identification
+    # Commands
     if text == "/myid":
         await update.message.reply_text(f"Твой Telegram ID: `{user.id}`", parse_mode="Markdown")
         return
-
-    # Skip commands
     if text.startswith("/"):
         return
 
-    # Require role selection first
-    if not context.user_data.get("role"):
+    role = await _ensure_role(context, user.id)
+    if not role:
         await update.message.reply_text(
-            "Сначала выберите роль, чтобы я знал, какие вопросы вам задавать.\n"
-            "Напишите /start для выбора роли."
+            "Сначала выбери роль через /start."
         )
         return
 
-    # Check if user is clarifying a question number after a voice message
-    pending = context.user_data.get("pending_question")
-    if pending and text.isdigit():
-        number = int(text)
-        if 1 <= number <= 45:
-            save_response(
-                user_id=user.id,
-                username=user.username or user.full_name,
-                question_number=number,
-                raw_text=pending["transcript"],
-                audio_path=pending["audio_path"],
-                status="answered",
-            )
-            update_user_activity(user.id)
-            context.user_data.pop("pending_question", None)
-            await update.message.reply_text(
-                f"✅ Понял, это был ответ на вопрос {number}. Спасибо!"
-            )
-            await _show_progress_and_next(update.message, context)
-            return
-
+    # Try to parse question number from text
     question_number = parse_question_number(text)
 
-    save_response(
-        user_id=user.id,
-        username=user.username or user.full_name,
-        question_number=question_number,
-        raw_text=text,
-        status="answered",
-    )
-    update_user_activity(user.id)
+    # If there is a pending voice, try to bind this text as its question number
+    pending_id = context.user_data.get("pending_voice_id")
+    if pending_id:
+        if question_number:
+            # Update the pending voice response with the question number
+            from database import get_connection
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE responses SET question_number = ?, status = 'answered' WHERE id = ?",
+                (question_number, pending_id),
+            )
+            conn.commit()
+            conn.close()
+            context.user_data.pop("pending_voice_id", None)
 
+            await update.message.reply_text(
+                f"✅ Вопрос {question_number} принят. Спасибо!"
+            )
+            await _show_after_answer(update.message, context, user.id, question_number)
+            return
+        else:
+            # Text without number — could be the number itself written as just "5"
+            if text.isdigit():
+                num = int(text)
+                if 1 <= num <= 45:
+                    from database import get_connection
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE responses SET question_number = ?, status = 'answered' WHERE id = ?",
+                        (num, pending_id),
+                    )
+                    conn.commit()
+                    conn.close()
+                    context.user_data.pop("pending_voice_id", None)
+
+                    await update.message.reply_text(
+                        f"✅ Вопрос {num} принят. Спасибо!"
+                    )
+                    await _show_after_answer(update.message, context, user.id, num)
+                    return
+
+            # Text without number, no pending voice matched
+            await update.message.reply_text(
+                "Я не вижу номер вопроса.\n"
+                "Напиши номер вопроса, на который ответил — просто цифру (1, 2, 3...)."
+            )
+            return
+
+    # Normal text answer (no pending voice)
     if question_number:
-        await update.message.reply_text(f"✅ Вопрос {question_number} принят. Спасибо!")
-        await _show_progress_and_next(update.message, context)
+        save_response(
+            user_id=user.id,
+            username=user.username or user.full_name,
+            question_number=question_number,
+            raw_text=text,
+            status="answered",
+        )
+        update_user_activity(user.id)
+
+        await update.message.reply_text(
+            f"✅ Вопрос {question_number} принят. Спасибо!"
+        )
+        await _show_after_answer(update.message, context, user.id, question_number)
     else:
         await update.message.reply_text(
-            f"✅ Принято. Спасибо!\n"
-            f"💡 В следующий раз напишите номер вопроса в начале, например: «Вопрос 5. ...»"
+            "✅ Принято. Спасибо!\n"
+            "💡 В следующий раз напиши номер вопроса в начале — "
+            "например: «Вопрос 5. ...»"
         )
 
 
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard callbacks: append, next block, renovation, finish."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = update.effective_user
+
+    # Append to question N
+    if data.startswith("append_"):
+        qnum = int(data.replace("append_", ""))
+        context.user_data["append_question"] = qnum
+        await query.edit_message_text(
+            f"📝 Жду дополнение к вопросу {qnum}.\n"
+            "Отправь голосовое или текст."
+        )
+        return
+
+    # Renovation yes
+    if data == "renovation_yes":
+        context.user_data["skip_renovation"] = False
+        role = context.user_data.get("role")
+        blocks = get_blocks_for_role(role)
+        # Find renovation block index
+        ren_idx = blocks.index("Реновация окон")
+        update_user_block(user.id, ren_idx)
+        context.user_data["current_block"] = ren_idx
+        await query.edit_message_text("Отлично! Показываю блок по реновации окон.")
+        await _send_block_intro(query.message, context, ren_idx, user.id)
+        return
+
+    # Renovation no
+    if data == "renovation_no":
+        context.user_data["skip_renovation"] = True
+        role = context.user_data.get("role")
+        blocks = get_blocks_for_role(role)
+        # Skip to final block
+        final_idx = blocks.index("Финальный")
+        update_user_block(user.id, final_idx)
+        context.user_data["current_block"] = final_idx
+        await query.edit_message_text("Понял! Переходим к финальному блоку.")
+        await _send_block_intro(query.message, context, final_idx, user.id)
+        return
+
+    # Next block
+    if data == "next_block":
+        role = context.user_data.get("role")
+        current_block_idx = context.user_data.get("current_block", 0)
+        blocks = get_blocks_for_role(role)
+        next_block_idx = current_block_idx + 1
+
+        if next_block_idx < len(blocks):
+            next_name = blocks[next_block_idx]
+
+            # If next is renovation and user is masters who said no, skip to final
+            if (role == "masters" and next_name == "Реновация окон"
+                    and context.user_data.get("skip_renovation")):
+                # Move directly to final
+                final_idx = blocks.index("Финальный")
+                update_user_block(user.id, final_idx)
+                context.user_data["current_block"] = final_idx
+                await query.edit_message_text("✅ Блок завершён! Переходим к финальному блоку.")
+                await _send_block_intro(query.message, context, final_idx, user.id)
+                return
+
+            update_user_block(user.id, next_block_idx)
+            context.user_data["current_block"] = next_block_idx
+            await query.edit_message_text(
+                f"✅ Блок «{blocks[current_block_idx]}» завершён! "
+                f"Переходим к следующему."
+            )
+            await _send_block_intro(query.message, context, next_block_idx, user.id)
+        else:
+            await _send_final_message(query)
+        return
+
+    # Finish survey
+    if data == "finish_survey":
+        await _send_final_message(query)
+        return
+
+
+async def _send_final_message(chat_or_msg):
+    """Send final congratulations and mark user as finished."""
+    user_id = await _get_user_id(chat_or_msg)
+    if not user_id:
+        return
+    mark_user_finished(user_id)
+    msg = (
+        "🎉 Спасибо! Ты ответил на все вопросы.\n\n"
+        "Твои ответы очень помогут нашей рекламе и контенту. "
+        "Если вспомнишь ещё что-то — просто напиши номер вопроса "
+        "и ответ, я приму.\n\n"
+        "Хорошего дня!"
+    )
+    await chat_or_msg.reply_text(msg)
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show detailed progress for current block."""
+    user = update.effective_user
+    role = await _ensure_role(context, user.id)
+    if not role:
+        await update.message.reply_text("Сначала выбери роль через /start.")
+        return
+
+    await _show_status(update.message, user.id, context)
+
+
+async def questions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    role = context.user_data.get("role")
+    if not role:
+        await start(update, context)
+        return
+
+    role_name = ROLES.get(role, role)
+    questions_text = format_questions(role)
+    await update.message.reply_text(
+        f"Твои вопросы ({role_name}):\n\n{questions_text}"
+    )
+
+
 async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYPE):
-    """Global error handler — catches all unhandled exceptions."""
+    """Global error handler."""
     log_error("unhandled_exception", context.error, {
         "update_id": update.update_id if update else None,
         "user_id": update.effective_user.id if update and update.effective_user else None,
@@ -530,11 +621,10 @@ async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYP
     if update and update.effective_chat:
         try:
             await update.effective_chat.send_message(
-                "❌ Что-то пошло не так. Нажмите /start чтобы продолжить опрос."
+                "❌ Что-то пошло не так. Нажми /start чтобы продолжить."
             )
         except Exception:
             pass
-    # Only admins get the full traceback
     try:
         if update and update.effective_user and _is_admin(update.effective_user.id):
             await update.effective_user.send_message(
@@ -546,7 +636,6 @@ async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYP
 
 
 async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command: show system health."""
     if not _is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда только для администраторов.")
         return
@@ -566,8 +655,9 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "SerwisWin Survey Bot\n\n"
-        "Помощник для сбора инсайтов от сотрудников. Принимает голосовые и текстовые "
-        "ответы на вопросы опросника, расшифровывает их и сохраняет для анализа.\n\n"
+        "Помощник для сбора инсайтов от сотрудников. "
+        "Принимает голосовые и текстовые ответы на вопросы опросника "
+        "и сохраняет их для анализа.\n\n"
         "Создан для улучшения рекламы и контента SerwisWin."
     )
     await update.message.reply_text(text)
@@ -598,7 +688,6 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда только для администраторов.")
         return
-    """Export all responses as CSV."""
     responses = get_all_responses()
 
     if not responses:
@@ -607,13 +696,16 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["ID", "User ID", "Username", "Вопрос №", "Текст вопроса", "Ответ (транскрипт)", "Дата"])
+    writer.writerow([
+        "ID", "User ID", "Username", "Вопрос №", "Текст вопроса",
+        "Текст ответа", "Путь к аудио", "Статус", "Дата",
+    ])
 
     for r in responses:
         writer.writerow([
             r["id"], r["user_id"], r["username"],
             r["question_number"], r["question_text"],
-            r["raw_text"], r["created_at"],
+            r["raw_text"], r["audio_path"], r["status"], r["created_at"],
         ])
 
     csv_bytes = output.getvalue().encode("utf-8-sig")
@@ -632,6 +724,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("questions", questions_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("export", export_command))
@@ -639,7 +732,7 @@ def main():
     app.add_handler(CommandHandler("health", health_command))
 
     app.add_handler(CallbackQueryHandler(role_callback, pattern="^role_"))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(skip_|retry_skipped|next_block|finish_survey|instr_voice_|instr_text_)"))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(append_|next_block|finish_survey|renovation_)"))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

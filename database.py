@@ -17,6 +17,7 @@ def db_migrate():
     migrations = [
         "ALTER TABLE questions ADD COLUMN optional INTEGER DEFAULT 0",
         "ALTER TABLE responses ADD COLUMN status TEXT DEFAULT ''",
+        "ALTER TABLE responses ADD COLUMN transcript TEXT DEFAULT NULL",
         "ALTER TABLE users ADD COLUMN last_reminder TEXT",
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -202,6 +203,44 @@ def mark_user_finished(user_id):
     conn.close()
 
 
+# ─── Transcription queue ──────────────────────────────────────────────
+
+
+def get_untranscribed_audio() -> list[dict]:
+    """Return responses with status='pending_transcription' and an audio_path."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, user_id, audio_path FROM responses "
+        "WHERE status = 'pending_transcription' AND audio_path IS NOT NULL"
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_response_transcription(response_id: int, transcript: str, question_number: int | None = None):
+    """Update a response with transcription result and mark as answered."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE responses SET transcript = ?, question_number = ?, status = 'answered' WHERE id = ?",
+        (transcript, question_number, response_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_current_block(user_id: int) -> int:
+    """Get user's current block index. Defaults to 0."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT current_block FROM users WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row["current_block"] if row else 0
+
+
 # ─── Responses queries ────────────────────────────────────────────────
 
 
@@ -216,6 +255,20 @@ def get_user_responses(user_id):
     rows = cur.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def mark_voice_pending(user_id, username, audio_path):
+    """Insert a response row with status='voice_saved' and no question number."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO responses (user_id, username, audio_path, status) VALUES (?, ?, ?, 'voice_saved')",
+        (user_id, username, audio_path),
+    )
+    conn.commit()
+    row_id = cur.lastrowid
+    conn.close()
+    return row_id
 
 
 def get_skipped_questions(user_id):
@@ -313,7 +366,7 @@ def get_all_responses():
     cur = conn.cursor()
     cur.execute("""
         SELECT r.id, r.user_id, r.username, r.question_number, q.text as question_text,
-               r.raw_text, r.audio_path, r.created_at
+               r.raw_text, r.transcript, r.audio_path, r.status, r.created_at
         FROM responses r
         LEFT JOIN questions q ON r.question_number = q.number
         ORDER BY r.created_at

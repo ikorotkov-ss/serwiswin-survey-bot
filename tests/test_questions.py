@@ -90,7 +90,7 @@ class TestBlockHelpers:
     def test_masters_blocks_order(self):
         from survey_data import get_blocks_for_role
         blocks = get_blocks_for_role("masters")
-        assert blocks == ["Универсальный", "Реновация окон", "Мастера (выезд)", "Финальный"]
+        assert blocks == ["Универсальный", "Мастера (выезд)", "Реновация окон", "Финальный"]
 
     def test_sales_universal_block_15_questions(self):
         from survey_data import get_questions_in_block

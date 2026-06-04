@@ -193,7 +193,9 @@ class TestUserProgressIntegration:
     """Integration tests for get_user_progress with real data."""
 
     def test_sales_progress_initial(self, tmp_path):
-        from database import get_or_create_user, get_user_progress, load_questions
+        from database import (
+    get_or_create_user, get_user_progress, load_questions,
+)
         from survey_data import questions as qs
 
         import config
@@ -288,3 +290,130 @@ class TestUserProgressIntegration:
         get_or_create_user(10001, "no_skip_user")
 
         assert get_skipped_questions(10001) == []
+
+
+class TestTranscriptionQueue:
+    """Test get_untranscribed_audio and update_response_transcription."""
+
+    def test_get_untranscribed_audio_empty(self, tmp_path):
+        from database import get_untranscribed_audio, load_questions, init_db, db_migrate
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_empty_transcription.db"
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        assert get_untranscribed_audio() == []
+
+    def test_get_untranscribed_audio_finds_pending(self, tmp_path):
+        from database import (
+            get_untranscribed_audio, load_questions, save_response,
+            init_db, db_migrate, get_connection,
+        )
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_pending_transcription.db"
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        save_response(111, "user", None, None, audio_path="/tmp/test.ogg", status="pending_transcription")
+        save_response(111, "user", 1, "already answered", status="answered")
+        save_response(112, "user2", None, None, audio_path="/tmp/test2.ogg", status="pending_transcription")
+        save_response(113, "user3", None, None, audio_path=None, status="pending_transcription")
+
+        pending = get_untranscribed_audio()
+        # Only the two with audio_path should be returned
+        assert len(pending) == 2
+        assert pending[0]["audio_path"] == "/tmp/test.ogg"
+        assert pending[1]["audio_path"] == "/tmp/test2.ogg"
+
+    def test_update_response_transcription(self, tmp_path):
+        from database import (
+            update_response_transcription, load_questions, save_response,
+            init_db, db_migrate, get_connection,
+        )
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_update_transcription.db"
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        row_id = save_response(111, "user", None, None, status="pending_transcription")
+
+        # Update with transcript and question number
+        update_response_transcription(row_id, "клиент сказал что дорого", question_number=5)
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM responses WHERE id = ?", (row_id,))
+        row = dict(cur.fetchone())
+        conn.close()
+        assert row["transcript"] == "клиент сказал что дорого"
+        assert row["question_number"] == 5
+        assert row["status"] == "answered"
+
+    def test_update_response_transcription_no_qnum(self, tmp_path):
+        from database import (
+            update_response_transcription, load_questions, save_response,
+            init_db, db_migrate, get_connection,
+        )
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_update_no_qnum.db"
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        row_id = save_response(111, "user", None, None, status="pending_transcription")
+
+        # Update with transcript but no question number
+        update_response_transcription(row_id, "какой-то текст без номера")
+
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM responses WHERE id = ?", (row_id,))
+        row = dict(cur.fetchone())
+        conn.close()
+        assert row["transcript"] == "какой-то текст без номера"
+        assert row["question_number"] is None
+        assert row["status"] == "answered"
+
+
+class TestGetCurrentBlock:
+    """Test get_current_block function."""
+
+    def test_default_block(self, tmp_path):
+        from database import get_current_block, load_questions, init_db, db_migrate
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_default_block.db"
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        assert get_current_block(99999) == 0
+
+    def test_set_and_get_block(self, tmp_path):
+        from database import (
+            get_current_block, update_user_block, get_or_create_user,
+            load_questions, init_db, db_migrate,
+        )
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_set_block.db"
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        get_or_create_user(55555, "block_user")
+        update_user_block(55555, 2)
+        assert get_current_block(55555) == 2

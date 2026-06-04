@@ -13,23 +13,6 @@ def count_mandatory(question_numbers: list[int]) -> int:
     return sum(1 for q in question_numbers if not is_optional(q))
 
 
-def format_progress_with_optional(answered: int, total: int, optional_answered: int, total_optional: int) -> str:
-    """
-    Format progress bar showing mandatory + optional progress.
-    E.g.:
-    "📊 Прогресс: 18/23 обязательных + 1/2 опциональных"
-    """
-    mandatory_total = total - total_optional
-    if mandatory_total <= 0:
-        return f"📊 Прогресс: {optional_answered}/{total_optional} опциональных"
-
-    mandatory_answered = answered - optional_answered
-    mandatory_part = f"{mandatory_answered}/{mandatory_total} обязательных"
-    if total_optional > 0:
-        return f"📊 Прогресс: {mandatory_part} + {optional_answered}/{total_optional} опциональных"
-    return f"📊 Прогресс: {mandatory_part}"
-
-
 class TestOptionalQuestions:
     """Verify optional question logic."""
 
@@ -64,47 +47,3 @@ class TestMandatoryCount:
         masters_questions = list(range(1, 16)) + list(range(26, 42)) + [42, 43, 44, 45]
         mandatory = count_mandatory(masters_questions)
         assert mandatory == 33
-
-
-class TestProgressWithOptional:
-    """Verify progress bar formatting with optional questions."""
-
-    def test_no_optional_yet(self):
-        # 10 mandatory answered, no optional
-        result = format_progress_with_optional(
-            answered=10, total=25,
-            optional_answered=0, total_optional=2,
-        )
-        assert "10/23 обязательных" in result
-        assert "0/2 опциональных" in result
-
-    def test_all_mandatory_done(self):
-        result = format_progress_with_optional(
-            answered=23, total=25,
-            optional_answered=0, total_optional=2,
-        )
-        assert "23/23 обязательных" in result
-        assert "0/2 опциональных" in result
-
-    def test_all_done_including_optional(self):
-        result = format_progress_with_optional(
-            answered=25, total=25,
-            optional_answered=2, total_optional=2,
-        )
-        assert "23/23 обязательных" in result
-        assert "2/2 опциональных" in result
-
-    def test_one_optional_done(self):
-        result = format_progress_with_optional(
-            answered=24, total=25,
-            optional_answered=1, total_optional=2,
-        )
-        assert "23/23 обязательных" in result
-        assert "1/2 опциональных" in result
-
-    def test_no_optional_questions(self):
-        result = format_progress_with_optional(
-            answered=15, total=15,
-            optional_answered=0, total_optional=0,
-        )
-        assert "15/15 обязательных" in result

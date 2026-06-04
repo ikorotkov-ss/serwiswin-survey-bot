@@ -22,3 +22,6 @@ models/ggml-small.bin
 # Deploy secrets
 deploy/inventory.ini
 deploy/watchdog.sh
+
+# Local logs
+logs/

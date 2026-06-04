@@ -317,7 +317,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user = update.effective_user
 
-    # Instruction buttons (just info, no action needed)
+    # Instruction buttons — send as new message, don't replace the question
     if data.startswith("instr_voice_") or data.startswith("instr_text_"):
         qnum = data.replace("instr_voice_", "").replace("instr_text_", "")
         instr = (
@@ -327,7 +327,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✏️ Напиши текстовый ответ.\n"
             f"Начни с «Вопрос {qnum}» — так я пойму, на какой вопрос ты отвечаешь."
         )
-        await query.edit_message_text(instr)
+        # Send as new message so the question stays visible
+        await query.message.reply_text(instr)
         return
 
     # Skip question

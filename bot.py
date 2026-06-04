@@ -419,6 +419,33 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Если пользователь нажал "Дополнить вопрос N" — сохраняем напрямую
+    append_q = context.user_data.pop("append_question", None)
+    if append_q:
+        voice = update.message.voice
+        try:
+            file = await voice.get_file()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ogg_path = AUDIO_DIR / f"{user.id}_{timestamp}.ogg"
+            await file.download_to_drive(ogg_path)
+        except Exception as e:
+            log_error("voice_download", e, {"user_id": user.id})
+            await update.message.reply_text("❌ Не удалось загрузить голосовое. Попробуй ещё раз.")
+            return
+
+        save_response(
+            user_id=user.id,
+            username=user.username or user.full_name,
+            question_number=append_q,
+            raw_text=None,
+            audio_path=str(ogg_path),
+            status="answered",
+        )
+        update_user_activity(user.id)
+        await update.message.reply_text(f"✅ Дополнение к вопросу {append_q} принято. Спасибо!")
+        await _show_after_answer(update.message, context, user.id, append_q)
+        return
+
     voice = update.message.voice
 
     try:
@@ -462,6 +489,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Сначала выбери роль через /start."
         )
+        return
+
+    # Если пользователь нажал "Дополнить вопрос N" — сохраняем напрямую
+    append_q = context.user_data.pop("append_question", None)
+    if append_q:
+        save_response(
+            user_id=user.id,
+            username=user.username or user.full_name,
+            question_number=append_q,
+            raw_text=text,
+            status="answered",
+        )
+        update_user_activity(user.id)
+        await update.message.reply_text(f"✅ Дополнение к вопросу {append_q} принято. Спасибо!")
+        await _show_after_answer(update.message, context, user.id, append_q)
         return
 
     # Try to parse question number from text

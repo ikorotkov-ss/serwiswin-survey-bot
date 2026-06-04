@@ -49,6 +49,7 @@ def transcribe(audio_path: str) -> str:
         "-l", "auto",
         "--no-timestamps",
         "--output-txt",
+        "-ng",  # no GPU — server has no CUDA
     ]
 
     try:
@@ -56,7 +57,7 @@ def transcribe(audio_path: str) -> str:
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=120,
         )
 
         # Try reading from .txt file first (whisper writes output there)

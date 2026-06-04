@@ -88,7 +88,7 @@ async def _get_user_id(obj):
 
 
 async def _send_block_intro(chat_or_msg, context, block_index: int, user_id: int):
-    """Show welcome + all parts of a block."""
+    """Show welcome + only the first (or next unanswered) part of a block."""
     role = context.user_data.get("role")
     if not role:
         return
@@ -97,9 +97,13 @@ async def _send_block_intro(chat_or_msg, context, block_index: int, user_id: int
     total_blocks = len(blocks)
     parts = _get_block_part_indices(block_name, role)
 
-    # Welcome message
-    welcome = get_block_welcome(block_name)
-    await chat_or_msg.reply_text(welcome)
+    # Find the part the user is currently on
+    target_part = _get_current_part_idx(user_id, block_name, role)
+
+    # Welcome message only for part 0
+    if target_part == 0:
+        welcome = get_block_welcome(block_name)
+        await chat_or_msg.reply_text(welcome)
 
     # Get answered question numbers
     user_responses = get_user_responses(user_id)
@@ -108,29 +112,29 @@ async def _send_block_intro(chat_or_msg, context, block_index: int, user_id: int
         if r.get("status") == "answered" and r.get("question_number"):
             answered_nums.add(r["question_number"])
 
-    # Show each part as separate message
-    for part_idx, q_numbers in enumerate(parts):
-        lines = []
-        if part_idx == 0:
-            lines.append(f"📋 **Блок {block_index + 1} из {total_blocks}: {block_name}**\n")
-        else:
-            lines.append(f"📋 **{block_name} (продолжение)**\n")
+    # Show only the current part
+    q_numbers = parts[target_part]
+    lines = []
+    if target_part == 0:
+        lines.append(f"📋 **Блок {block_index + 1} из {total_blocks}: {block_name}**\n")
+    else:
+        lines.append(f"📋 **{block_name} (часть {target_part + 1})**\n")
 
-        for qnum in q_numbers:
-            q = get_question_data(qnum)
-            if not q:
-                continue
-            opt_tag = " (опц.)" if is_optional(qnum) else ""
-            prefix = "✅" if qnum in answered_nums else f"{qnum}."
-            lines.append(f"{prefix} {q['text']}{opt_tag}")
+    for qnum in q_numbers:
+        q = get_question_data(qnum)
+        if not q:
+            continue
+        opt_tag = " (опц.)" if is_optional(qnum) else ""
+        prefix = "✅" if qnum in answered_nums else f"{qnum}."
+        lines.append(f"{prefix} {q['text']}{opt_tag}")
 
-        lines.extend([
-            "",
-            "📲 **Как отвечать:**",
-            "Начинай с номера вопроса — например: «Вопрос 5. ...»",
-            "Можно голосом или текстом.",
-        ])
-        await chat_or_msg.reply_text("\n".join(lines))
+    lines.extend([
+        "",
+        "📲 **Как отвечать:**",
+        "Начинай с номера вопроса — например: «Вопрос 5. ...»",
+        "Можно голосом или текстом.",
+    ])
+    await chat_or_msg.reply_text("\n".join(lines))
 
 
 def get_question_data(qnum: int) -> dict | None:
@@ -139,6 +143,35 @@ def get_question_data(qnum: int) -> dict | None:
         if q["number"] == qnum:
             return q
     return None
+
+
+def _get_current_part_idx(user_id: int, block_name: str, role: str) -> int:
+    """Find which part of a block the user is currently on."""
+    parts = _get_block_part_indices(block_name, role)
+    user_responses = get_user_responses(user_id)
+    for part_idx, part_qnums in enumerate(parts):
+        # Check if all questions in this part are answered
+        for qnum in part_qnums:
+            answered = any(
+                r.get("status") == "answered" and r.get("question_number") == qnum
+                for r in user_responses
+            )
+            if not answered:
+                return part_idx
+    return len(parts) - 1  # All parts done, stay on last
+
+
+def _is_part_fully_answered(user_id: int, block_name: str, role: str) -> bool:
+    """Check if current part of a block is fully answered."""
+    parts = _get_block_part_indices(block_name, role)
+    current_part = _get_current_part_idx(user_id, block_name, role)
+    part_qnums = set(parts[current_part])
+    user_responses = get_user_responses(user_id)
+    answered = set()
+    for r in user_responses:
+        if r.get("status") == "answered" and r.get("question_number") in part_qnums:
+            answered.add(r["question_number"])
+    return part_qnums.issubset(answered)
 
 
 def _is_block_fully_answered(user_id: int, block_name: str, role: str) -> bool:
@@ -207,8 +240,9 @@ async def _show_after_answer(chat_or_msg, context, user_id: int, last_qnum: int 
                 )
                 return
 
-    # Determine block completion
-    block_done = _is_block_fully_answered(user_id, block_name, role)
+    # Determine part and block completion
+    part_done = _is_part_fully_answered(user_id, block_name, role)
+    block_done = _is_block_fully_answered(user_id, block_name, role) if part_done else False
 
     voice_pending = _count_voice_pending(user_id, block_name, role)
 
@@ -236,6 +270,11 @@ async def _show_after_answer(chat_or_msg, context, user_id: int, last_qnum: int 
                 "🏁 Завершить опрос",
                 callback_data="finish_survey",
             )])
+    elif part_done and not block_done and voice_pending == 0:
+        buttons.append([InlineKeyboardButton(
+            "➡️ Следующие вопросы блока",
+            callback_data="next_part",
+        )])
 
     if buttons:
         await chat_or_msg.reply_text(
@@ -532,6 +571,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["current_block"] = final_idx
         await query.edit_message_text("Понял! Переходим к финальному блоку.")
         await _send_block_intro(query.message, context, final_idx, user.id)
+        return
+
+    # Next part within same block
+    if data == "next_part":
+        user_id = update.effective_user.id
+        role = context.user_data.get("role")
+        current_block_idx = context.user_data.get("current_block", 0)
+        await _send_block_intro(query.message, context, current_block_idx, user_id)
         return
 
     # Next block

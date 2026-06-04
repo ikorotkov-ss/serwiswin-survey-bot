@@ -252,13 +252,7 @@ async def _show_after_answer(chat_or_msg, context, user_id: int, last_qnum: int 
         buttons.append([InlineKeyboardButton(f"📝 Дополнить вопрос {last_qnum}",
                         callback_data=f"append_{last_qnum}")])
 
-    if voice_pending > 0:
-        await chat_or_msg.reply_text(
-            f"📌 У тебя {voice_pending} голосовое без номера вопроса. "
-            "Напиши номер вопроса, на который оно было."
-        )
-
-    if block_done and voice_pending == 0:
+    if block_done:
         if current_block_idx + 1 < len(blocks):
             next_block_name = blocks[current_block_idx + 1]
             buttons.append([InlineKeyboardButton(
@@ -270,7 +264,7 @@ async def _show_after_answer(chat_or_msg, context, user_id: int, last_qnum: int 
                 "🏁 Завершить опрос",
                 callback_data="finish_survey",
             )])
-    elif part_done and not block_done and voice_pending == 0:
+    elif part_done and not block_done:
         buttons.append([InlineKeyboardButton(
             "➡️ Следующие вопросы блока",
             callback_data="next_part",

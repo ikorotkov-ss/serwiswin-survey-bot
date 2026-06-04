@@ -520,19 +520,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         existing = has_answer_for_question(user.id, qnum_or_none)
         if existing:
             # Question already answered — offer to append or pick another
-            context.user_data["reuse_pending_voice_id"] = pending_id
-            context.user_data["reuse_question_number"] = qnum_or_none
             keyboard = [
                 [InlineKeyboardButton(f"➕ Дополнить вопрос {qnum_or_none}", callback_data=f"append_{qnum_or_none}")],
-                [InlineKeyboardButton(f"❌ Пропустить это голосовое", callback_data=f"drop_voice_{pending_id}")],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
                 f"⚠️ На вопрос {qnum_or_none} уже есть ответ.\n\n"
-                "Что хочешь сделать?\n"
-                f"• [Дополнить] — добавить это голосовое к вопросу {qnum_or_none}\n"
-                f"• [Пропустить] — удалить голосовое, не сохранять\n"
-                "• Или напиши **другой номер** вопроса",
+                "Ты можешь дополнить его кнопкой ниже\n"
+                "или написать **другой номер** вопроса.\n"
+                "Голосовое не потеряется.",
                 reply_markup=reply_markup,
             )
             return
@@ -566,7 +562,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f"⚠️ На вопрос {qnum_or_none} уже есть ответ.\n\n"
                 "Текст не сохранён.\n"
-                f"Нажми [Дополнить], чтобы добавить этот текст к вопросу {qnum_or_none},\n"
+                f"Нажми кнопку, чтобы добавить текст к вопросу {qnum_or_none},\n"
                 "или напиши другой номер вопроса.",
                 reply_markup=reply_markup,
             )
@@ -611,21 +607,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
     user = update.effective_user
-
-    # Drop pending voice (user doesn't want to keep it)
-    if data.startswith("drop_voice_"):
-        pending_id = int(data.replace("drop_voice_", ""))
-        from database import get_connection
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("DELETE FROM responses WHERE id = ? AND status = 'voice_saved'", (pending_id,))
-        conn.commit()
-        conn.close()
-        context.user_data.pop("pending_voice_id", None)
-        context.user_data.pop("reuse_pending_voice_id", None)
-        context.user_data.pop("reuse_question_number", None)
-        await query.edit_message_text("❌ Голосовое удалено. Отправь новое, если нужно.")
-        return
 
     # Append to question N
     if data.startswith("append_"):

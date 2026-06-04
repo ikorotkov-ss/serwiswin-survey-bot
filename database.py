@@ -257,6 +257,20 @@ def get_user_responses(user_id):
     return [dict(r) for r in rows]
 
 
+def has_answer_for_question(user_id, question_number):
+    """Check if user already has an answered/voice_saved response for this question.
+    Returns the response dict or None."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, status FROM responses WHERE user_id = ? AND question_number = ? AND status IN ('answered', 'voice_saved')",
+        (user_id, question_number),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def mark_voice_pending(user_id, username, audio_path):
     """Insert a response row with status='voice_saved' and no question number."""
     conn = get_connection()

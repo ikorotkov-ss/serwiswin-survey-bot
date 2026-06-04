@@ -505,71 +505,85 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Try to parse question number from text
     question_number = parse_question_number(text)
 
-    # If there is a pending voice, try to bind this text as its question number
+    # Normalise the question number from text or plain digit
+    qnum_or_none = question_number
+    if qnum_or_none is None and text.isdigit():
+        n = int(text)
+        if 1 <= n <= 45:
+            qnum_or_none = n
+
     pending_id = context.user_data.get("pending_voice_id")
-    if pending_id:
-        if question_number:
-            # Update the pending voice response with the question number
-            from database import get_connection
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE responses SET question_number = ?, status = 'answered' WHERE id = ?",
-                (question_number, pending_id),
-            )
-            conn.commit()
-            conn.close()
-            context.user_data.pop("pending_voice_id", None)
 
+    if pending_id and qnum_or_none:
+        # ── Pending voice + recognised question number ──────────────────
+        from database import has_answer_for_question
+        existing = has_answer_for_question(user.id, qnum_or_none)
+        if existing:
+            # Question already answered — offer to append or pick another
+            context.user_data["reuse_pending_voice_id"] = pending_id
+            context.user_data["reuse_question_number"] = qnum_or_none
+            keyboard = [
+                [InlineKeyboardButton(f"➕ Дополнить вопрос {qnum_or_none}", callback_data=f"append_{qnum_or_none}")],
+                [InlineKeyboardButton(f"❌ Пропустить это голосовое", callback_data=f"drop_voice_{pending_id}")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                f"✅ Вопрос {question_number} принят. Спасибо!"
-            )
-            await _show_after_answer(update.message, context, user.id, question_number)
-            return
-        else:
-            # Text without number — could be the number itself written as just "5"
-            if text.isdigit():
-                num = int(text)
-                if 1 <= num <= 45:
-                    from database import get_connection
-                    conn = get_connection()
-                    cur = conn.cursor()
-                    cur.execute(
-                        "UPDATE responses SET question_number = ?, status = 'answered' WHERE id = ?",
-                        (num, pending_id),
-                    )
-                    conn.commit()
-                    conn.close()
-                    context.user_data.pop("pending_voice_id", None)
-
-                    await update.message.reply_text(
-                        f"✅ Вопрос {num} принят. Спасибо!"
-                    )
-                    await _show_after_answer(update.message, context, user.id, num)
-                    return
-
-            # Text without number, no pending voice matched
-            await update.message.reply_text(
-                "Я не вижу номер вопроса.\n"
-                "Напиши номер вопроса, на который ответил — просто цифру (1, 2, 3...)."
+                f"⚠️ На вопрос {qnum_or_none} уже есть ответ.\n\n"
+                "Что хочешь сделать?\n"
+                f"• [Дополнить] — добавить это голосовое к вопросу {qnum_or_none}\n"
+                f"• [Пропустить] — удалить голосовое, не сохранять\n"
+                "• Или напиши **другой номер** вопроса",
+                reply_markup=reply_markup,
             )
             return
 
-    # Normal text answer (no pending voice)
-    if question_number:
+        # No duplicate — bind normally
+        _bind_pending_voice(pending_id, qnum_or_none)
+        context.user_data.pop("pending_voice_id", None)
+        await update.message.reply_text(
+            f"✅ Вопрос {qnum_or_none} принят. Спасибо!"
+        )
+        await _show_after_answer(update.message, context, user.id, qnum_or_none)
+        return
+
+    if pending_id and not qnum_or_none:
+        # ── Pending voice but text is not a recognised number ───────────
+        await update.message.reply_text(
+            "Я не вижу номер вопроса.\n"
+            "Напиши номер вопроса, на который ответил — просто цифру (1, 2, 3...)."
+        )
+        return
+
+    # ── Normal text answer (no pending voice) ────────────────────────
+    if qnum_or_none:
+        from database import has_answer_for_question
+        existing = has_answer_for_question(user.id, qnum_or_none)
+        if existing:
+            keyboard = [
+                [InlineKeyboardButton(f"➕ Дополнить вопрос {qnum_or_none}", callback_data=f"append_{qnum_or_none}")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                f"⚠️ На вопрос {qnum_or_none} уже есть ответ.\n\n"
+                "Текст не сохранён.\n"
+                f"Нажми [Дополнить], чтобы добавить этот текст к вопросу {qnum_or_none},\n"
+                "или напиши другой номер вопроса.",
+                reply_markup=reply_markup,
+            )
+            return
+
         save_response(
             user_id=user.id,
             username=user.username or user.full_name,
-            question_number=question_number,
+            question_number=qnum_or_none,
             raw_text=text,
             status="answered",
         )
         update_user_activity(user.id)
-
         await update.message.reply_text(
-            f"✅ Вопрос {question_number} принят. Спасибо!"
+            f"✅ Вопрос {qnum_or_none} принят. Спасибо!"
         )
-        await _show_after_answer(update.message, context, user.id, question_number)
+        await _show_after_answer(update.message, context, user.id, qnum_or_none)
     else:
         await update.message.reply_text(
             "✅ Принято. Спасибо!\n"
@@ -578,12 +592,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _bind_pending_voice(pending_id: int, question_number: int):
+    """Update a pending voice response with its question number."""
+    from database import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE responses SET question_number = ?, status = 'answered' WHERE id = ?",
+        (question_number, pending_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline keyboard callbacks: append, next block, renovation, finish."""
     query = update.callback_query
     await query.answer()
     data = query.data
     user = update.effective_user
+
+    # Drop pending voice (user doesn't want to keep it)
+    if data.startswith("drop_voice_"):
+        pending_id = int(data.replace("drop_voice_", ""))
+        from database import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM responses WHERE id = ? AND status = 'voice_saved'", (pending_id,))
+        conn.commit()
+        conn.close()
+        context.user_data.pop("pending_voice_id", None)
+        context.user_data.pop("reuse_pending_voice_id", None)
+        context.user_data.pop("reuse_question_number", None)
+        await query.edit_message_text("❌ Голосовое удалено. Отправь новое, если нужно.")
+        return
 
     # Append to question N
     if data.startswith("append_"):

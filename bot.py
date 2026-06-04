@@ -436,6 +436,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status="answered",
         )
         update_user_activity(user.id)
+        context.user_data.pop("pending_voice_id", None)
         await update.message.reply_text(f"✅ Дополнение к вопросу {append_q} принято. Спасибо!")
         await _show_after_answer(update.message, context, user.id, append_q)
         return
@@ -496,6 +497,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status="answered",
         )
         update_user_activity(user.id)
+        context.user_data.pop("pending_voice_id", None)
         await update.message.reply_text(f"✅ Дополнение к вопросу {append_q} принято. Спасибо!")
         await _show_after_answer(update.message, context, user.id, append_q)
         return

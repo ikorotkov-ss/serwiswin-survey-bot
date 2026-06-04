@@ -1,5 +1,8 @@
 """Tests for database operations."""
 import sqlite3
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class TestDatabaseSchema:
@@ -132,3 +135,153 @@ class TestDatabaseSchema:
 
         cur.execute("SELECT COUNT(*) as cnt FROM responses WHERE user_id = 999 AND status = 'skipped'")
         assert cur.fetchone()["cnt"] == 2
+
+
+class TestUserFunctions:
+    """Test get_or_create_user and related user functions."""
+
+    def _setup_db(self, db_path, questions_list):
+        from database import init_db, db_migrate, load_questions, get_connection
+        import config
+        config.DB_PATH = db_path
+        init_db()
+        db_migrate()
+        load_questions(questions_list)
+
+    def test_create_new_user(self, tmp_path):
+        from database import get_or_create_user
+        from survey_data import questions as qs
+
+        db_path = tmp_path / "test_new_user.db"
+        self._setup_db(db_path, qs)
+
+        user = get_or_create_user(11111, "newuser")
+        assert user["user_id"] == 11111
+        assert user["username"] == "newuser"
+        assert user.get("finished", 0) == 0
+
+    def test_get_existing_user(self, tmp_path):
+        from database import get_or_create_user
+        from survey_data import questions as qs
+
+        db_path = tmp_path / "test_existing_user.db"
+        self._setup_db(db_path, qs)
+
+        get_or_create_user(22222, "existing")
+        user2 = get_or_create_user(22222, "existing")
+        assert user2["user_id"] == 22222
+
+    def test_update_user_role(self, tmp_path):
+        from database import get_or_create_user, update_user_role
+        from survey_data import questions as qs
+
+        db_path = tmp_path / "test_update_role.db"
+        self._setup_db(db_path, qs)
+
+        get_or_create_user(33333, "role_user")
+        update_user_role(33333, "masters")
+
+        from database import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT role FROM users WHERE user_id = 33333")
+        assert cur.fetchone()["role"] == "masters"
+        conn.close()
+
+
+class TestUserProgressIntegration:
+    """Integration tests for get_user_progress with real data."""
+
+    def test_sales_progress_initial(self, tmp_path):
+        from database import get_or_create_user, get_user_progress, load_questions
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_progress_init.db"
+
+        from database import init_db, db_migrate
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        get_or_create_user(77777, "progress_user")
+
+        progress = get_user_progress(77777, "sales")
+        assert progress["total_questions"] == 29
+        assert progress["total_mandatory"] == 27
+        assert progress["total_optional"] == 2
+        assert progress["answered_count"] == 0
+        assert progress["skipped_count"] == 0
+
+    def test_sales_progress_with_answers(self, tmp_path):
+        from database import (
+            get_or_create_user, get_user_progress, load_questions,
+            save_response, mark_skipped,
+        )
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_progress_answers.db"
+
+        from database import init_db, db_migrate
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        get_or_create_user(88888, "ans_user")
+
+        # Answer 5 mandatory questions
+        for qnum in range(1, 6):
+            save_response(88888, "ans_user", qnum, f"answer {qnum}")
+
+        # Skip 1
+        mark_skipped(88888, 12)
+
+        # Answer 1 optional
+        save_response(88888, "ans_user", 42, "optional answer")
+
+        progress = get_user_progress(88888, "sales")
+        assert progress["answered_count"] == 6  # 5 mandatory + 1 optional
+        assert progress["skipped_count"] == 1
+        assert progress["optional_answered"] == 1
+        assert progress["mandatory_answered"] == 5
+        assert progress["total_mandatory"] == 27
+        assert progress["total_optional"] == 2
+
+    def test_skipped_questions_func(self, tmp_path):
+        from database import (
+            get_or_create_user, load_questions, mark_skipped, get_skipped_questions,
+        )
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_skipped_func.db"
+
+        from database import init_db, db_migrate
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        get_or_create_user(99999, "skip_user")
+        mark_skipped(99999, 3)
+        mark_skipped(99999, 7)
+        mark_skipped(99999, 15)
+
+        skipped = get_skipped_questions(99999)
+        assert skipped == [3, 7, 15]
+
+    def test_skipped_empty(self, tmp_path):
+        from database import get_or_create_user, get_skipped_questions, load_questions
+        from survey_data import questions as qs
+
+        import config
+        config.DB_PATH = tmp_path / "test_skipped_empty.db"
+
+        from database import init_db, db_migrate
+        init_db()
+        db_migrate()
+        load_questions(qs)
+
+        get_or_create_user(10001, "no_skip_user")
+
+        assert get_skipped_questions(10001) == []

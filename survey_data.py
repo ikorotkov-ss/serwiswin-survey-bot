@@ -95,13 +95,13 @@ questions = [
      "text": "Что вы слышите от клиентов про наш сервисный отчёт (certyfikowane sprawozdanie techniczne)? Читают? Ценят? Игнорируют?"},
 
     # ФИНАЛЬНЫЙ БЛОК (ДЛЯ ВСЕХ)
-    {"number": 42, "block": "Финальный", "role": "all",
+    {"number": 42, "block": "Финальный", "role": "all", "optional": True,
      "text": "Какую рекламу или объявление вы бы сделали сами, если бы были маркетологом? Какую фразу или историю поставили бы в центр рекламы?"},
     {"number": 43, "block": "Финальный", "role": "all",
      "text": "Если одним предложением — почему клиент должен выбрать SerwisWin вместо альтернатив? Твоя версия."},
     {"number": 44, "block": "Финальный", "role": "all",
      "text": "Что бы вы изменили в сервисе, чтобы клиентам стало ещё приятнее или удобнее?"},
-    {"number": 45, "block": "Финальный", "role": "all",
+    {"number": 45, "block": "Финальный", "role": "all", "optional": True,
      "text": "Какие вопросы мы забыли? Добавь то, что считаешь важным."},
 ]
 
@@ -124,3 +124,60 @@ def format_questions(role):
             lines.append(f"\n--- {current_block} ---")
         lines.append(f"{q['number']}. {q['text']}")
     return "\n".join(lines)
+
+
+# ─── Block navigation helpers ─────────────────────────────────────────
+
+BLOCK_ORDER = {
+    "sales": ["Универсальный", "Колл-центр", "Финальный"],
+    "masters": ["Универсальный", "Реновация окон", "Мастера (выезд)", "Финальный"],
+}
+
+BLOCK_WELCOMES = {
+    "Универсальный": (
+        "Первый блок — вопросы про клиентов. Тут нет правильных ответов. "
+        "Расскажи своими словами, как есть — это самое ценное. "
+        "Можно голосом, можно текстом. Начинаем!"
+    ),
+    "Колл-центр": (
+        "Отлично! Теперь блок для колл-центра. "
+        "Твои ответы помогут сделать нашу рекламу точнее. Поехали!"
+    ),
+    "Реновация окон": (
+        "Блок про реновацию деревянных окон. "
+        "Расскажи, как клиенты реагируют на результат и какие проблемы ты видишь чаще всего."
+    ),
+    "Мастера (выезд)": (
+        "Теперь блок для выездных мастеров. "
+        "Вспомни самые яркие случаи на объектах."
+    ),
+    "Финальный": (
+        "Финальный блок — 4 вопроса. "
+        "Вопросы 42 и 45 — опциональные, отвечай, если есть настроение. "
+        "Вопросы 43 и 44 — постарайся ответить, это важно для нашей рекламы."
+    ),
+}
+
+
+def get_blocks_for_role(role: str) -> list[str]:
+    """Return ordered block names for the given role."""
+    return BLOCK_ORDER.get(role, [q["block"] for q in questions])
+
+
+def get_questions_in_block(block_name: str, role: str) -> list[dict]:
+    """Return questions belonging to a block for the specified role, ordered by number."""
+    role_qs = get_questions_for_role(role)
+    return [q for q in role_qs if q["block"] == block_name]
+
+
+def is_optional(question_number: int) -> bool:
+    """Return True if question has optional=True in survey_data."""
+    for q in questions:
+        if q["number"] == question_number:
+            return q.get("optional", False)
+    return False
+
+
+def get_block_welcome(block_name: str) -> str:
+    """Return block welcome message text, or a default."""
+    return BLOCK_WELCOMES.get(block_name, f"Блок: {block_name}")

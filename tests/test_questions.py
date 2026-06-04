@@ -79,6 +79,84 @@ class TestRoleFiltering:
             assert q["block"] != "Колл-центр"
 
 
+class TestBlockHelpers:
+    """Test get_blocks_for_role and get_questions_in_block."""
+
+    def test_sales_blocks_order(self):
+        from survey_data import get_blocks_for_role
+        blocks = get_blocks_for_role("sales")
+        assert blocks == ["Универсальный", "Колл-центр", "Финальный"]
+
+    def test_masters_blocks_order(self):
+        from survey_data import get_blocks_for_role
+        blocks = get_blocks_for_role("masters")
+        assert blocks == ["Универсальный", "Реновация окон", "Мастера (выезд)", "Финальный"]
+
+    def test_sales_universal_block_15_questions(self):
+        from survey_data import get_questions_in_block
+        qs = get_questions_in_block("Универсальный", "sales")
+        assert len(qs) == 15
+        assert [q["number"] for q in qs] == list(range(1, 16))
+
+    def test_sales_call_center_block(self):
+        from survey_data import get_questions_in_block
+        qs = get_questions_in_block("Колл-центр", "sales")
+        assert len(qs) == 10
+        assert [q["number"] for q in qs] == list(range(16, 26))
+
+    def test_sales_final_block(self):
+        from survey_data import get_questions_in_block
+        qs = get_questions_in_block("Финальный", "sales")
+        assert len(qs) == 4
+        assert [q["number"] for q in qs] == [42, 43, 44, 45]
+
+    def test_masters_renovation_block(self):
+        from survey_data import get_questions_in_block
+        qs = get_questions_in_block("Реновация окон", "masters")
+        assert len(qs) == 6
+        assert [q["number"] for q in qs] == list(range(26, 32))
+
+    def test_masters_field_block(self):
+        from survey_data import get_questions_in_block
+        qs = get_questions_in_block("Мастера (выезд)", "masters")
+        assert len(qs) == 10
+        assert [q["number"] for q in qs] == list(range(32, 42))
+
+
+class TestOptionalHelpers:
+    """Test is_optional function."""
+
+    def test_is_optional_42(self):
+        from survey_data import is_optional
+        assert is_optional(42) is True
+
+    def test_is_optional_45(self):
+        from survey_data import is_optional
+        assert is_optional(45) is True
+
+    def test_is_optional_1(self):
+        from survey_data import is_optional
+        assert is_optional(1) is False
+
+    def test_is_optional_99_not_found(self):
+        from survey_data import is_optional
+        assert is_optional(99) is False
+
+
+class TestBlockWelcome:
+    """Test block welcome messages."""
+
+    def test_welcome_universal(self):
+        from survey_data import get_block_welcome
+        msg = get_block_welcome("Универсальный")
+        assert "первый" in msg.lower() or "Первый" in msg
+
+    def test_welcome_unknown_block(self):
+        from survey_data import get_block_welcome
+        msg = get_block_welcome("Блок 99")
+        assert msg == "Блок: Блок 99"
+
+
 class TestFormatQuestions:
     """Verify format_questions output is readable and correct."""
 

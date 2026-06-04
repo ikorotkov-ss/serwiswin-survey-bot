@@ -1,4 +1,4 @@
-Port 22
+Port 2222
 PermitRootLogin yes
 PasswordAuthentication yes
 PubkeyAuthentication yes

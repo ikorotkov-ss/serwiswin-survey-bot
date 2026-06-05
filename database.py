@@ -6,6 +6,8 @@ def get_connection():
     from config import DB_PATH
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -285,6 +287,19 @@ def mark_voice_pending(user_id, username, audio_path):
     return row_id
 
 
+def get_pending_voices(user_id):
+    """Return voice_saved responses without a question number for a user."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, audio_path, created_at FROM responses WHERE user_id = ? AND status = 'voice_saved' AND question_number IS NULL ORDER BY created_at",
+        (user_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_skipped_questions(user_id):
     """Return list of question numbers with status='skipped' for user."""
     conn = get_connection()
@@ -354,7 +369,7 @@ def get_stats():
     cur = conn.cursor()
 
     # Total participants
-    cur.execute("SELECT COUNT(DISTINCT user_id) FROM responses")
+    cur.execute("SELECT COUNT(*) FROM users")
     total_users = cur.fetchone()[0]
 
     # Total responses

@@ -19,6 +19,7 @@ from database import (
     init_db, db_migrate, load_questions, save_response, get_stats, get_all_responses,
     get_or_create_user, update_user_role, update_user_block, update_user_activity,
     mark_user_finished, get_user_responses, get_current_block, mark_voice_pending,
+    get_pending_voices,
 )
 from survey_data import (
     questions, format_questions, get_blocks_for_role,
@@ -97,6 +98,13 @@ async def _send_block_intro(chat_or_msg, context, block_index: int, user_id: int
     total_blocks = len(blocks)
     parts = _get_block_part_indices(block_name, role)
 
+    # Guard: current_block out of bounds — reset to 0
+    if block_index < 0 or block_index >= total_blocks:
+        block_index = 0
+        context.user_data["current_block"] = 0
+        update_user_block(user_id, 0)
+        block_name = blocks[0]
+
     # Find the part the user is currently on
     target_part = _get_current_part_idx(user_id, block_name, role)
 
@@ -162,28 +170,33 @@ def _get_current_part_idx(user_id: int, block_name: str, role: str) -> int:
 
 
 def _is_part_fully_answered(user_id: int, block_name: str, role: str) -> bool:
-    """Check if current part of a block is fully answered."""
+    """Check if current part of a block is fully answered (optional excluded)."""
     parts = _get_block_part_indices(block_name, role)
     current_part = _get_current_part_idx(user_id, block_name, role)
     part_qnums = set(parts[current_part])
+    mandatory_qnums = set(q for q in part_qnums if not is_optional(q))
+    if not mandatory_qnums:
+        return True
     user_responses = get_user_responses(user_id)
     answered = set()
     for r in user_responses:
-        if r.get("status") == "answered" and r.get("question_number") in part_qnums:
+        if r.get("status") == "answered" and r.get("question_number") in mandatory_qnums:
             answered.add(r["question_number"])
-    return part_qnums.issubset(answered)
+    return mandatory_qnums.issubset(answered)
 
 
 def _is_block_fully_answered(user_id: int, block_name: str, role: str) -> bool:
-    """Check if ALL questions in a block have at least one answered response."""
+    """Check if all mandatory questions in a block are answered (optional excluded)."""
     qs = get_questions_in_block(block_name, role)
-    all_qnums = {q["number"] for q in qs}
+    mandatory_qnums = {q["number"] for q in qs if not is_optional(q["number"])}
+    if not mandatory_qnums:
+        return True
     user_responses = get_user_responses(user_id)
     answered = set()
     for r in user_responses:
-        if r.get("status") == "answered" and r.get("question_number") in all_qnums:
+        if r.get("status") == "answered" and r.get("question_number") in mandatory_qnums:
             answered.add(r["question_number"])
-    return all_qnums.issubset(answered)
+    return mandatory_qnums.issubset(answered)
 
 
 def _count_block_answered(user_id: int, block_name: str, role: str) -> int:
@@ -352,6 +365,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["current_block"] = block_idx
         update_user_activity(user.id)
 
+        # Check for orphaned voice recordings without a question number
+        pending = get_pending_voices(user.id)
+        if pending:
+            pending_id = pending[0]["id"]
+            context.user_data["pending_voice_id"] = pending_id
+            await update.message.reply_text(
+                "📌 У тебя есть необработанное голосовое сообщение.\n"
+                "Напиши номер вопроса, на который ты ответил."
+            )
+
         await _send_block_intro(update.message, context, block_idx, user.id)
         await _show_after_answer(update.message, context, user.id)
         return
@@ -402,6 +425,7 @@ async def role_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"Ты выбрал: **{role_name}**", parse_mode="Markdown")
 
     await _send_block_intro(query.message, context, 0, user.id)
+    await _show_after_answer(query.message, context, user.id)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -582,6 +606,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await _show_after_answer(update.message, context, user.id, qnum_or_none)
     else:
+        # Save unnumbered text so it's not lost
+        save_response(
+            user_id=user.id,
+            username=user.username or user.full_name,
+            question_number=None,
+            raw_text=text,
+            status="text_unnumbered",
+        )
         await update.message.reply_text(
             "✅ Принято. Спасибо!\n"
             "💡 В следующий раз напиши номер вопроса в начале — "
@@ -624,8 +656,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["skip_renovation"] = False
         role = context.user_data.get("role")
         blocks = get_blocks_for_role(role)
-        # Find renovation block index
-        ren_idx = blocks.index("Реновация окон")
+        try:
+            ren_idx = blocks.index("Реновация окон")
+        except ValueError:
+            await query.edit_message_text("❌ Блок реновации не найден. Напиши /start.")
+            return
         update_user_block(user.id, ren_idx)
         context.user_data["current_block"] = ren_idx
         await query.edit_message_text("Отлично! Показываю блок по реновации окон.")
@@ -637,8 +672,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["skip_renovation"] = True
         role = context.user_data.get("role")
         blocks = get_blocks_for_role(role)
-        # Skip to final block
-        final_idx = blocks.index("Финальный")
+        try:
+            final_idx = blocks.index("Финальный")
+        except ValueError:
+            await query.edit_message_text("❌ Финальный блок не найден. Напиши /start.")
+            return
         update_user_block(user.id, final_idx)
         context.user_data["current_block"] = final_idx
         await query.edit_message_text("Понял! Переходим к финальному блоку.")
@@ -851,7 +889,7 @@ def main():
     app.add_handler(CommandHandler("health", health_command))
 
     app.add_handler(CallbackQueryHandler(role_callback, pattern="^role_"))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(append_|next_block|finish_survey|renovation_)"))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(append_|next_block|next_part|finish_survey|renovation_)"))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

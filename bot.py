@@ -564,7 +564,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"✅ Вопрос {qnum_or_none} принят. Спасибо!"
         )
-        await _show_after_answer(update.message, context, user.id, qnum_or_none)
+
+        # Check if there are more orphaned voices for this user
+        remaining = get_pending_voices(user.id)
+        if remaining:
+            next_id = remaining[0]["id"]
+            context.user_data["pending_voice_id"] = next_id
+            await update.message.reply_text(
+                "📌 У тебя есть ещё одно необработанное голосовое.\n"
+                "Напиши номер вопроса, на который ты ответил."
+            )
+        else:
+            await _show_after_answer(update.message, context, user.id, qnum_or_none)
         return
 
     if pending_id and not qnum_or_none:

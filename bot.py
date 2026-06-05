@@ -350,6 +350,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         block_idx = user_data.get("current_block", 0)
         context.user_data["role"] = role
         context.user_data["current_block"] = block_idx
+        update_user_activity(user.id)
 
         await _send_block_intro(update.message, context, block_idx, user.id)
         await _show_after_answer(update.message, context, user.id)

@@ -33,6 +33,16 @@ def test_db(tmp_path):
             status TEXT DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            role TEXT,
+            current_block INTEGER DEFAULT 0,
+            last_activity TEXT,
+            last_reminder TEXT,
+            finished INTEGER DEFAULT 0
+        );
     """)
 
     conn.commit()

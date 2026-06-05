@@ -1,5 +1,8 @@
 """Tests for reminder timing logic (1h / 3h / quiet hours)."""
 from datetime import datetime, timedelta, timezone, time
+from unittest.mock import patch
+
+from reminder import is_quiet_hours as real_is_quiet_hours
 
 
 # Warsaw timezone offset: UTC+2 in summer (CEST), UTC+1 in winter (CET)
@@ -71,6 +74,30 @@ class TestQuietHours:
     def test_1pm_is_not_quiet(self):
         t = datetime(2026, 6, 4, 13, 0)
         assert is_quiet_hours(t) is False
+
+
+class TestRealReminderCode:
+    """Tests that import and call the actual reminder.py code."""
+
+    def test_real_is_quiet_hours_midnight(self):
+        with patch("reminder.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 0
+            assert real_is_quiet_hours() is True
+
+    def test_real_is_quiet_hours_1pm(self):
+        with patch("reminder.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 13
+            assert real_is_quiet_hours() is False
+
+    def test_real_is_quiet_hours_11pm(self):
+        with patch("reminder.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 23
+            assert real_is_quiet_hours() is True
+
+    def test_real_is_quiet_hours_7am(self):
+        with patch("reminder.datetime") as mock_dt:
+            mock_dt.now.return_value.hour = 7
+            assert real_is_quiet_hours() is False
 
 
 class TestReminderTiming:

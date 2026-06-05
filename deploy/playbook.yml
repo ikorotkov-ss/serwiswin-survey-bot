@@ -169,3 +169,24 @@
         enabled: yes
         state: started
         daemon_reload: yes
+
+    # ── Reminder (systemd timer every 15 min) ─────────────────────────
+
+    - name: Install reminder service
+      copy:
+        src: survey-bot-reminder.service
+        dest: /etc/systemd/system/survey-bot-reminder.service
+        mode: 0644
+
+    - name: Install reminder timer
+      copy:
+        src: survey-bot-reminder.timer
+        dest: /etc/systemd/system/survey-bot-reminder.timer
+        mode: 0644
+
+    - name: Enable and start reminder timer
+      systemd:
+        name: survey-bot-reminder.timer
+        enabled: yes
+        state: started
+        daemon_reload: yes

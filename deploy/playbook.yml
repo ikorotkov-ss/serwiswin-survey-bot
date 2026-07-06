@@ -147,7 +147,7 @@
 
     - name: Install watchdog script
       template:
-        src: watchdog.sh
+        src: watchdog.sh.j2
         dest: "{{ bot_dir }}/deploy/watchdog.sh"
         mode: 0755
 

@@ -105,35 +105,33 @@ class TestAnsiblePlaybook:
         tasks_text = str(data)
         assert "timer" in tasks_text.lower() or "systemd" in tasks_text.lower()
 
-    def test_reminder_service_uses_j2_template(self):
-        reminder_j2 = os.path.join(DEPLOY_DIR, "survey-bot-reminder.service.j2")
-        assert os.path.exists(reminder_j2), "Reminder service should be a .j2 template"
-        with open(reminder_j2) as f:
-            content = f.read()
-        assert "{{ data_dir }}" in content, (
-            "Reminder service should use {{ data_dir }} template variable"
-        )
-        assert "{{ bot_dir }}" in content, (
-            "Reminder service should use {{ bot_dir }} template variable"
-        )
+    def test_all_j2_files_use_template_vars_not_hardcoded_paths(self):
+        """Every .j2 file in deploy/ must use {{ data_dir }}/{{ bot_dir }}/{{ bot_user }},
+        not hardcoded paths like /opt/survey-bot or /var/lib/survey-bot."""
+        hardcoded_patterns = ["/opt/survey-bot", "/var/lib/survey-bot"]
+        j2_files = [f for f in os.listdir(DEPLOY_DIR) if f.endswith(".j2")]
+        assert len(j2_files) > 0, "No .j2 files found in deploy/"
+        for fname in j2_files:
+            with open(os.path.join(DEPLOY_DIR, fname)) as f:
+                content = f.read()
+            for pattern in hardcoded_patterns:
+                assert pattern not in content, (
+                    f"{fname} contains hardcoded path '{pattern}'. "
+                    f"Use {{ data_dir }} / {{ bot_dir }} template variable instead."
+                )
 
-    def test_reminder_service_not_plain_copy(self):
-        """Reminder service should NOT reference hardcoded paths."""
-        reminder_j2 = os.path.join(DEPLOY_DIR, "survey-bot-reminder.service.j2")
-        with open(reminder_j2) as f:
-            content = f.read()
-        assert "/opt/survey-bot" not in content, (
-            "Reminder service should use template variables, not hardcoded paths"
-        )
-
-    def test_playbook_uses_template_for_reminder_service(self):
+    def test_playbook_templates_reference_j2_files(self):
+        """Every template: src in playbook should point to a .j2 file."""
         import yaml
         with open(os.path.join(DEPLOY_DIR, "playbook.yml")) as f:
             data = yaml.safe_load(f)
-        tasks_text = str(data)
-        assert "template" in tasks_text and "survey-bot-reminder" in tasks_text, (
-            "Playbook should use template module for reminder service"
-        )
+        for play in data:
+            for task in play.get("tasks", []):
+                if task.get("template"):
+                    src = task["template"]["src"]
+                    assert src.endswith(".j2"), (
+                        f"Template src '{src}' should end with .j2"
+                    )
 
 
 class TestSetupScript:

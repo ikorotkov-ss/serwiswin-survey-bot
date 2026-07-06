@@ -173,8 +173,8 @@
     # ── Reminder (systemd timer every 15 min) ─────────────────────────
 
     - name: Install reminder service
-      copy:
-        src: survey-bot-reminder.service
+      template:
+        src: survey-bot-reminder.service.j2
         dest: /etc/systemd/system/survey-bot-reminder.service
         mode: 0644
 

@@ -6,8 +6,8 @@ After=network.target
 Type=oneshot
 User=surveybot
 Group=surveybot
-Environment=DATA_DIR=/opt/survey-bot
-WorkingDirectory=/opt/survey-bot
-ExecStart=/usr/bin/python3 /opt/survey-bot/reminder.py
+Environment=DATA_DIR={{ data_dir }}
+WorkingDirectory={{ bot_dir }}
+ExecStart=/usr/bin/python3 {{ bot_dir }}/reminder.py
 StandardOutput=journal
 StandardError=journal

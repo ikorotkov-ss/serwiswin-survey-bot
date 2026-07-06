@@ -122,8 +122,9 @@ def parse_question_number(text: str) -> int | None:
 
     patterns = [
         r"^(?:вопрос|question|pytanie)\s*(\d{1,2})",
-        r"^(\d{1,2})[\.\)\s]",
+        r"^(\d{1,2})[\.\)\s\?]",
         r"^номер\s*(\d{1,2})",
+        r"^0*(\d{1,2})$",
     ]
 
     for pattern in patterns:

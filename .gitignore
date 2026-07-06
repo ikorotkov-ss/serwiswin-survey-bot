@@ -25,3 +25,7 @@ deploy/watchdog.sh
 
 # Local logs
 logs/
+
+# SSH infra (server-specific)
+authorized_keys
+sshd_config

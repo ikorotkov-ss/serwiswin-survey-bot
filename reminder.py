@@ -8,6 +8,7 @@ Run by systemd timer every 15 minutes.
 Quiet hours: 23:00-07:00 Europe/Warsaw (no reminders sent).
 """
 
+import asyncio
 import os
 import sys
 from datetime import datetime, timezone, timedelta
@@ -42,7 +43,7 @@ REMINDER_TEXTS = {
         "Мы собрали уже много крутых инсайтов от коллег, "
         "и твой опыт тоже важен. Клиенты каждый день говорят "
         "интересные вещи — поделись ими.\n\n"
-        "Это займёт всего 20-30 минут. Начни с /start",
+        "Это займёт всего 20-30 минут. Начни с /start"
     ),
 }
 
@@ -126,7 +127,7 @@ def update_last_reminder(user_id: int):
     conn.close()
 
 
-def main():
+async def main():
     # Run migrations in case they haven't been applied yet
     db_migrate()
 
@@ -135,6 +136,7 @@ def main():
         return
 
     bot = Bot(token=BOT_TOKEN)
+    await bot.initialize()
     users = get_users_for_reminder()
 
     print(f"[{datetime.now(TZ).isoformat()}] Found {len(users)} users to remind")
@@ -142,12 +144,14 @@ def main():
     for user in users:
         text = REMINDER_TEXTS.get(user["reminder_level"], REMINDER_TEXTS[1])
         try:
-            bot.send_message(chat_id=user["user_id"], text=text)
+            await bot.send_message(chat_id=user["user_id"], text=text)
             update_last_reminder(user["user_id"])
             print(f"  ✓ Sent reminder level {user['reminder_level']} to user {user['user_id']}")
         except TelegramError as e:
             print(f"  ✗ Failed to send to user {user['user_id']}: {e}")
 
+    await bot.shutdown()
+
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

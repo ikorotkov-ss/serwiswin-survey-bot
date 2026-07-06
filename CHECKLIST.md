@@ -15,7 +15,8 @@
 - [ ] `journalctl -u survey-bot -n 30` — нет ошибок, трейсбеков, исключений
 - [ ] `curl -s -o /dev/null -w "%{http_code}" https://api.telegram.org` — ответ 200/302
 - [ ] `python3 -c "from config import BOT_TOKEN, ADMIN_IDS, DB_PATH; print('OK')"` — конфиг загружается
-- [ ] `whisper-cli -m /path/to/model -f /dev/null --help` — whisper работает
+- [ ] Если используется полный режим: `whisper-cli -m /path/to/model -f /dev/null --help` — whisper работает
+- [ ] Если используется лёгкий режим: голосовые сохраняются в `audio/`, а whisper не запускается во время опроса
 
 ### 3. Проверка DATA_DIR (разделение кода и данных)
 - [ ] `systemctl show survey-bot -p Environment` — содержит `DATA_DIR=/var/lib/survey-bot`
@@ -35,7 +36,7 @@
 
 ### 6. Память и ресурсы
 - [ ] `free -h` — RAM не переполнена
-- [ ] `df -h /` — диск не забит (модель 466MB + БД)
+- [ ] `df -h /` — диск не забит (аудио + БД; в полном режиме ещё модель 466MB)
 - [ ] `ps aux | grep survey-bot` — процесс не жрёт CPU
 
 ### 7. Мониторинг и алерты

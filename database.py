@@ -4,7 +4,7 @@ from pathlib import Path
 
 def get_connection():
     from config import DB_PATH
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -151,7 +151,7 @@ def get_or_create_user(user_id, username):
         return dict(row)
 
     cur.execute(
-        "INSERT INTO users (user_id, username) VALUES (?, ?)",
+        "INSERT INTO users (user_id, username, last_activity) VALUES (?, ?, datetime('now'))",
         (user_id, username),
     )
     conn.commit()

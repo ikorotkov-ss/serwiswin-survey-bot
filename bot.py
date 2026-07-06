@@ -497,10 +497,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user = update.effective_user
 
-    # Commands
-    if text == "/myid":
-        await update.message.reply_text(f"Твой Telegram ID: `{user.id}`", parse_mode="Markdown")
-        return
+    # Commands — ignore all /commands except admin ones handled above
     if text.startswith("/"):
         return
 
@@ -767,17 +764,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _show_status(update.message, user.id, context)
 
 
-async def questions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    role = context.user_data.get("role")
-    if not role:
-        await start(update, context)
-        return
-
-    role_name = ROLES.get(role, role)
-    questions_text = format_questions(role)
-    await update.message.reply_text(
-        f"Твои вопросы ({role_name}):\n\n{questions_text}"
-    )
 
 
 async def error_handler(update: Update | None, context: ContextTypes.DEFAULT_TYPE):
@@ -819,16 +805,6 @@ async def health_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-
-async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "SerwisWin Survey Bot\n\n"
-        "Помощник для сбора инсайтов от сотрудников. "
-        "Принимает голосовые и текстовые ответы на вопросы опросника "
-        "и сохраняет их для анализа.\n\n"
-        "Создан для улучшения рекламы и контента SerwisWin."
-    )
-    await update.message.reply_text(text)
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -893,10 +869,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status_command))
-    app.add_handler(CommandHandler("questions", questions_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("export", export_command))
-    app.add_handler(CommandHandler("about", about_command))
     app.add_handler(CommandHandler("health", health_command))
 
     app.add_handler(CallbackQueryHandler(role_callback, pattern="^role_"))

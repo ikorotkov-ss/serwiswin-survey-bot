@@ -1,0 +1,31 @@
+# .env
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Database
+survey.db
+
+# Audio files
+audio/
+*.ogg
+*.wav
+
+# Whisper models (download separately)
+models/ggml-small.bin
+
+# macOS
+.DS_Store
+
+# Deploy secrets
+deploy/inventory.ini
+deploy/watchdog.sh
+
+# Local logs
+logs/
+
+# SSH infra (server-specific)
+authorized_keys
+sshd_config

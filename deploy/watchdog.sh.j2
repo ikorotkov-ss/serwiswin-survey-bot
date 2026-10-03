@@ -1,0 +1,73 @@
+#!/bin/bash
+# SerwisWin Survey Bot — Watchdog
+# Runs every 5 minutes via systemd timer.
+# Checks: bot process, disk space, memory, Telegram API.
+# Sends alerts via systemd-journald (caught by bot logging).
+
+set -euo pipefail
+
+BOT_SERVICE="survey-bot"
+BOT_USER="{{ bot_user }}"
+DATA_DIR="{{ data_dir }}"
+ADMIN_IDS="{{ admin_ids }}"  # placeholder, replaced by deploy
+
+ALERTS=()
+
+# ── 1. Bot process ─────────────────────────────────────────────────────
+
+if ! systemctl is-active --quiet "$BOT_SERVICE"; then
+    ALERTS+=("Бот $BOT_SERVICE НЕ РАБОТАЕТ!")
+    # Attempt recovery
+    systemctl restart "$BOT_SERVICE" 2>/dev/null || true
+    echo "WATCHDOG: $BOT_SERVICE was down, restarted" | systemd-cat -t survey-bot-watchdog -p emerg
+fi
+
+# ── 2. Disk space ──────────────────────────────────────────────────────
+
+DISK_USED=$(df / | tail -1 | awk '{print $5}' | tr -d '%')
+if [ "$DISK_USED" -gt 90 ]; then
+    ALERTS+=("Диск заполнен на ${DISK_USED}%!")
+    echo "WATCHDOG: Disk at ${DISK_USED}%" | systemd-cat -t survey-bot-watchdog -p crit
+fi
+
+# ── 3. Memory ──────────────────────────────────────────────────────────
+
+MEM_USED=$(free | grep Mem | awk '{print int($3/$2 * 100)}')
+if [ "$MEM_USED" -gt 90 ]; then
+    ALERTS+=("RAM: ${MEM_USED}% использовано!")
+    echo "WATCHDOG: RAM at ${MEM_USED}%" | systemd-cat -t survey-bot-watchdog -p warning
+fi
+
+# ── 4. Telegram API access ─────────────────────────────────────────────
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 https://api.telegram.org 2>/dev/null || echo "000")
+if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "302" ]; then
+    ALERTS+=("Telegram API недоступен (HTTP $HTTP_CODE)!")
+    echo "WATCHDOG: Telegram API returned HTTP $HTTP_CODE" | systemd-cat -t survey-bot-watchdog -p crit
+fi
+
+# ── 5. DATA_DIR integrity ──────────────────────────────────────────────
+
+if [ ! -f "$DATA_DIR/survey.db" ]; then
+    ALERTS+=("Файл БД не найден в $DATA_DIR/survey.db!")
+    echo "WATCHDOG: DB file missing" | systemd-cat -t survey-bot-watchdog -p err
+fi
+
+# ── 6. Bot user ────────────────────────────────────────────────────────
+
+if ! id "$BOT_USER" &>/dev/null; then
+    ALERTS+=("Пользователь $BOT_USER не существует!")
+    echo "WATCHDOG: Bot user missing" | systemd-cat -t survey-bot-watchdog -p crit
+fi
+
+# ── 7. Report ──────────────────────────────────────────────────────────
+
+if [ ${#ALERTS[@]} -gt 0 ]; then
+    echo "WATCHDOG: ISSUES FOUND:"
+    for alert in "${ALERTS[@]}"; do
+        echo "  ❌ $alert"
+    done
+    exit 1
+fi
+
+echo "WATCHDOG: All checks passed ✅"

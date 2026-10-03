@@ -1,0 +1,7 @@
+[Unit]
+Description=SerwisWin Survey Bot Watchdog
+Wants=survey-bot.service
+
+[Service]
+Type=oneshot
+ExecStart={{ bot_dir }}/deploy/watchdog.sh

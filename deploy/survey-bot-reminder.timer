@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Survey Bot reminder every 15 minutes
+Requires=survey-bot-reminder.service
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
